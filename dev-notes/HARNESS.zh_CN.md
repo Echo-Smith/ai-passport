@@ -142,6 +142,7 @@ export IDF_COMPONENT_STORAGE_URL=https://components-file.espressif.cn  # Managed
 | 按键事件选择 | 即时交互用 PRESS（省半个判定窗口），确认类用 CLICK |
 | 音频-存储并发 | 有 BGM+保存需求才开 IRAM-safe，保存在安全边界 |
 | 中文 | 上 CJK 子集字体，真机验证字形 |
+| 资源持有策略 | 页面级确定性生命周期优先（进页初始化/出页整套释放，重栈永不同时驻留——继承基线 Wi-Fi/BLE 页模式）；缓存型内存才加 OOM 兜底：`heap_caps_register_failed_alloc_callback()` 失败回调释放缓存后自动重试，大块分配前用 `heap_caps_get_largest_free_block()` 预检；两本账分开管（LVGL 池 24KB 与系统堆 ~300KB 互不相通） |
 
 ---
 

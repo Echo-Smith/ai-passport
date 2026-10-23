@@ -142,6 +142,7 @@ edit → ./tools/validate.sh --firmware (~90 s)
 | Key event choice | PRESS for immediate interactions (saves half the decision window); CLICK for confirmations |
 | Audio-storage concurrency | enable IRAM-safe only with BGM+saves; save at safe boundaries |
 | Chinese | CJK subset font, verified on device |
+| Resource holding | page-scoped deterministic lifecycle first (init on enter, full release on exit; heavy stacks never co-resident — inherit the baseline Wi-Fi/BLE page pattern); add an OOM fallback only for cache-like memory: `heap_caps_register_failed_alloc_callback()` releases caches and the failed allocation retries automatically, and `heap_caps_get_largest_free_block()` gates large allocations; track the two pools separately (24 KB LVGL pool and ~300 KB system heap never borrow from each other) |
 
 ---
 
