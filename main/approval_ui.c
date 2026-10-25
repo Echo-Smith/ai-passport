@@ -46,7 +46,7 @@ static bool s_dark;
 static uint8_t s_dim_idx = 2;   // 40/60/80/100
 
 // ---- 状态 ----
-typedef enum { PG_HOME, PG_MENU, PG_ACTIVITY, PG_USAGE, PG_SETTINGS, PG_ABOUT } page_t;
+typedef enum { PG_HOME, PG_MENU, PG_ACTIVITY, PG_USAGE, PG_PUSH, PG_SETTINGS, PG_ABOUT } page_t;
 typedef enum { OV_NONE, OV_REQ_P1, OV_REQ_P2, OV_NOTIFY, OV_FLASH } overlay_t;
 
 static QueueHandle_t s_decision_q;
@@ -66,6 +66,9 @@ static int s_rssi = -100;
 
 // 覆盖层当前请求
 static char s_req_id[24], s_req_agent[16], s_req_title[64], s_req_detail[160];
+static char s_health_line[96];        // "up 1" / "down 0"
+static char s_health_pending[3][64];  // 待决推送摘要（最多展示 3 行）
+static int s_health_pend_n;
 static int64_t s_notify_until_us;
 
 // ---- 对象 ----
@@ -90,6 +93,7 @@ static const char *const WDAY_CN[7] =
 
 static void show_home(void);
 static void show_menu(void);
+static void show_push_page(void);
 static void settings_cycle_dim(void);
 static uint8_t s_set_sel;
 static void approval_ui_build_all(void);
@@ -345,8 +349,8 @@ static void show_home(void) {
 // 菜单（灰底 + 白卡片）
 // ======================================================================
 static const char *const MENU_ITEMS[] =
-    { "用量与额度", "设置", "关于" };
-#define MENU_COUNT 3
+    { "推送", "用量与额度", "设置", "关于" };
+#define MENU_COUNT 4
 static lv_obj_t *menu_list;
 
 static void menu_refresh(void) {
@@ -387,7 +391,44 @@ static void show_menu(void) {
 }
 
 // ======================================================================
-// Magpie 活动页
+// 推送页（健康状态：桥/设备/待决请求）
+// ======================================================================
+static void show_push_page(void) {
+    s_page = PG_PUSH;
+    open_page_container();
+    lv_obj_t *list = lv_obj_create(page_cont);
+    style_reset(list);
+    lv_obj_set_size(list, 208, 244);
+    lv_obj_set_pos(list, 0, 0);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, 8, 0);
+
+    lv_obj_t *card = make_card(list, 208, 56);
+    lv_obj_set_style_pad_hor(card, 12, 0);
+    lv_obj_t *t1 = make_label(card, &app_font_16, P->sub, 0, 8, 184);
+    lv_label_set_text(t1, "桥连接");
+    lv_obj_t *v1 = make_label(card, &app_font_16,
+                              s_health_line[0] == 'u' ? P->allow : P->deny,
+                              0, 28, 184);
+    lv_label_set_text(v1, s_health_line[0] ? s_health_line : "未知");
+
+    lv_obj_t *card2 = make_card(list, 208, 62);
+    lv_obj_set_style_pad_hor(card2, 12, 0);
+    lv_obj_t *t2 = make_label(card2, &app_font_16, P->sub, 0, 8, 184);
+    lv_label_set_text(t2, "待决推送");
+    if (s_health_pend_n == 0) {
+        lv_obj_t *v2 = make_label(card2, &app_font_16, P->body, 0, 30, 184);
+        lv_label_set_text(v2, "无（全部已处理）");
+    } else {
+        lv_obj_t *v2 = make_label(card2, &lv_font_montserrat_14,
+                                  P->body, 0, 28, 184);
+        lv_label_set_text(v2, s_health_pending[0]);
+    }
+    ui_footer("OK 返回");
+}
+
+// ======================================================================
+// 用量与额度页
 // ======================================================================
 static void show_usage_page(void) {
     s_page = PG_USAGE;
@@ -699,9 +740,10 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
             menu_refresh();
         } else if (btn == BSP_BTN_OK) {
             switch (s_menu_sel) {
-                case 0: show_usage_page(); break;
-                case 1: show_settings_page(); break;
-                case 2: show_about_page(); break;
+                case 0: show_push_page(); break;
+                case 1: show_usage_page(); break;
+                case 2: show_settings_page(); break;
+                case 3: show_about_page(); break;
             }
         }
     } else if (s_page == PG_SETTINGS) {
@@ -740,8 +782,24 @@ static void handle_msg(const ui_msg_t *m) {
         case UI_MSG_USAGE:
             usage_apply(m);
             break;
+        case UI_MSG_HEALTH: {
+            // title = "up 1"；detail = 待决行（| 分隔）
+            strlcpy(s_health_line, m->title, sizeof(s_health_line));
+            s_health_pend_n = 0;
+            char tmp[160];
+            strlcpy(tmp, m->detail, sizeof(tmp));
+            char *seg = strtok(tmp, "|");
+            while (seg && s_health_pend_n < 3) {
+                strlcpy(s_health_pending[s_health_pend_n], seg, 64);
+                s_health_pend_n++;
+                seg = strtok(NULL, "|");
+            }
+            break;
+        }
         case UI_MSG_STATUS:
-            break;   // 连接态由信号格与通知体现
+            snprintf(s_health_line, sizeof(s_health_line), "%s",
+                     strstr(m->title, "up") ? "up" : "down");
+            break;
         case UI_MSG_CANCEL:
             if (s_overlay == OV_REQ_P1 || s_overlay == OV_REQ_P2
                 || s_overlay == OV_NOTIFY) {

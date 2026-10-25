@@ -183,7 +183,13 @@ static void net_task(void *arg) {
 
             char rbuf[1024];
             int rlen = 0;
+            int status_tick = 0;
             for (;;) {
+                status_tick++;
+                if (status_tick >= 100) {   // ~10s
+                    status_tick = 0;
+                    send_line(sock, "{\"type\":\"status\"}");
+                }
                 struct timeval tv = { .tv_sec = 0, .tv_usec = 100 * 1000 };
                 lwip_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
                 int n = lwip_recv(sock, rbuf + rlen, sizeof(rbuf) - rlen - 1, 0);
@@ -212,6 +218,34 @@ static void net_task(void *arg) {
                             ui_msg_t m = { 0 };
                             m.kind = UI_MSG_STATUS;
                             strlcpy(m.title, "up", sizeof(m.title));
+                            approval_ui_post(&m);
+                            send_line(sock, "{\"type\":\"status\"}");
+                        } else if (type && strcmp(type, "status") == 0) {
+                            // 推送健康：title="up N"，detail=待决行（| 分隔）
+                            cJSON *dev = cJSON_GetObjectItem(root, "devices");
+                            cJSON *pend = cJSON_GetObjectItem(root, "pending");
+                            cJSON *items = cJSON_GetObjectItem(root, "pending_items");
+                            ui_msg_t m = { 0 };
+                            m.kind = UI_MSG_HEALTH;
+                            snprintf(m.title, sizeof(m.title), "up %d",
+                                     dev ? dev->valueint : 0);
+                            m.detail[0] = 0;
+                            int n = 0;
+                            cJSON *it;
+                            cJSON_ArrayForEach(it, items) {
+                                if (n >= 3) break;
+                                const char *ag = cJSON_GetStringValue(
+                                    cJSON_GetObjectItem(it, "agent"));
+                                const char *ti = cJSON_GetStringValue(
+                                    cJSON_GetObjectItem(it, "title"));
+                                char line[52];
+                                snprintf(line, sizeof(line), "%s %s",
+                                         ag ? ag : "?", ti ? ti : "");
+                                if (n) strlcat(m.detail, "|", sizeof(m.detail));
+                                strlcat(m.detail, line, sizeof(m.detail));
+                                n++;
+                            }
+                            (void)pend;
                             approval_ui_post(&m);
                         } else if (type && strcmp(type, "ping") == 0) {
                             send_line(sock, "{\"type\":\"pong\"}");
