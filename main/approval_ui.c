@@ -527,21 +527,21 @@ static void build_overlay(void) {
 
     ov_panel = lv_obj_create(veil);
     style_reset(ov_panel);
-    lv_obj_set_size(ov_panel, 208, 196);
-    lv_obj_set_pos(ov_panel, 16, 62);
+    lv_obj_set_size(ov_panel, 208, 176);          // 240×320 正中：上下各 72
+    lv_obj_set_pos(ov_panel, 16, 72);
     lv_obj_set_style_bg_color(ov_panel, lv_color_hex(P->panel), 0);
     lv_obj_set_style_bg_opa(ov_panel, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(ov_panel, 16, 0);
     lv_obj_set_style_border_width(ov_panel, 2, 0);
     lv_obj_set_style_border_color(ov_panel, lv_color_hex(P->hair), 0);
 
-    ov_tag = make_label(ov_panel, &lv_font_montserrat_14, P->accent, 14, 12, 180);
+    ov_tag = make_label(ov_panel, &lv_font_montserrat_14, P->accent, 14, 14, 180);
     ov_title = make_label(ov_panel, &app_font_16, P->ink,
-                          16, 34, 176);
+                          16, 38, 176);
     ov_detail = make_label(ov_panel, &lv_font_montserrat_14, P->body,
-                           16, 62, 176);
+                           16, 68, 176);
     ov_page_dots = make_label(ov_panel, &app_font_16,
-                              P->sub, 16, 156, 176);
+                              P->sub, 16, 140, 176);
     lv_label_set_text(ov_page_dots, "1/2");
 }
 
