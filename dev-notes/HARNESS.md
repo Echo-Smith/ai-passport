@@ -249,6 +249,23 @@ Status bar on one row: 14 px time (left) | battery outline 36×18 with the green
 **Network note**: the reported "no network" was the ~5 s boot window; UART evidence shows normal join (RSSI -42) and automatic bridge reconnect. The real device occasionally shows `--%` for the CW2017 read — to observe.
 
 
+### 6.9 WorkBuddy adapter (end-to-end 2026-10-26; all three agents wired)
+
+**Naming (user-approved)**: the product is **WorkBuddy**; the underlying CLI is **codebuddy** (CodeBuddy Code, a Claude Code-lineage fork) — the device popup and bridge agent name both use `workbuddy`.
+
+**Protocol facts measured on codebuddy 2.161.0 (installed to ~/.local/bin via the install subcommand; /login inside the TUI against copilot.tencent.com)**:
+- headless duplex stream: `codebuddy -p --input-format stream-json --output-format stream-json --permission-mode default`; stdin takes one JSON per line (user-message shape same as Claude Code)
+- **one-way `-p` has no approval channel** (tools are denied outright with a hint to use -y) — the duplex stream is mandatory
+- approvals arrive on stdout as `{"type":"control_request","request_id":"perm_...","request":{"subtype":"can_use_tool","tool_name","input":{"command"...},"tool_use_id"}}`
+- decisions go to stdin as `{"type":"control_response","response":{"subtype":"success","request_id":"<same id>","response":{"allowed":bool,"reason":str|null}}}` (three envelope essentials: request_id lives inside the response wrapper; the decision field is `allowed`, not Claude Code's behavior; subtype must be "success")
+- other control_requests (elicitation etc.) degrade safely with allowed:false
+- measured on hy4-preview: allowed:true really executed touch; deny:timeout returned allowed:false and the CLI finished normally
+
+**Bridge**: `bridge.py workbuddy --task "..." --cwd <dir>` (six modes: hub/mcp/send/codex/zcode/workbuddy). approval-bridge now has its own local git history (37ea5ed; not upstream).
+
+**Unified gateway end state**: manual send / Codex / ZCode / WorkBuddy / Magpie activity+usage — **approvals for all three of the user's agents can travel through the device**.
+
+
 ---
 
 ## 7. Decision log

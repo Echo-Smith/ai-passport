@@ -259,6 +259,23 @@ WorkBuddy（腾讯 CodeBuddy 系，Electron）桌面进程监听 4 个本机端�
 **网络诊断备注**：用户报"网络没连上"实为开机 ~5s 窗口期；UART 证据显示 Wi-Fi 正常入网（RSSI -42）并自动连桥。真机 CW2017 偶发 `--%`（电量读取失败）待观察。
 
 
+### 6.9 WorkBuddy 适配器（2026-10-26 端到端走通，三 Agent 集齐）
+
+**命名约定（用户拍板）**：产品名 **WorkBuddy**，底层 CLI 是 **codebuddy**（CodeBuddy Code，Claude Code 谱系 fork）——设备弹窗与桥内 agent 名统一用 `workbuddy`。
+
+**协议实测事实（codebuddy 2.161.0，~/.local/bin/codebuddy，install 子命令安装，TUI 内 /login 登录 copilot.tencent.com）**：
+- headless 双向流：`codebuddy -p --input-format stream-json --output-format stream-json --permission-mode default`；stdin 每行一条 JSON（user message 格式同 Claude Code）
+- **单向 `-p` 无审批通道**（工具直接拒 + 提示用 -y）——必须双向流
+- 审批 = stdout 的 `{"type":"control_request","request_id":"perm_...","request":{"subtype":"can_use_tool","tool_name","input":{"command"...},"tool_use_id"}}`
+- 决定 = stdin 的 `{"type":"control_response","response":{"subtype":"success","request_id":"<同 id>","response":{"allowed":bool,"reason":str|null}}}`（**信封三重要点**：request_id 在 response 包装内；决定字段是 `allowed` 而非 Claude Code 的 behavior；subtype 必须 "success"）
+- 其他 control_request（elicitation 等）回 allowed:false 即安全降级
+- hy4-preview 模型实测：allowed:true → touch 真实执行；deny:timeout → allowed:false → CLI 正常收尾
+
+**桥**：`bridge.py workbuddy --task "..." --cwd <dir>`（hub/mcp/send/codex/zcode/workbuddy 六模式齐）。approval-bridge 已独立 git init（本地仓库 37ea5ed，非上游）。
+
+**统一网关终态**：手动 send / Codex / ZCode / WorkBuddy / Magpie 活动+用量 —— **用户全部三 Agent 的审批均可走设备**。
+
+
 ---
 
 ## 7. 决策记录
