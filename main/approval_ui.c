@@ -497,7 +497,7 @@ static void show_about_page(void) {
     s_page = PG_ABOUT;
     open_page_container();
     const char *rows[] = {
-        "Approval Remote v0.3",
+        "Approval Remote v0.5",
         "桥: Mac approval-bridge",
         "电源键=硬件开关",
         NULL,
