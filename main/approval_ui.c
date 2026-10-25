@@ -43,6 +43,7 @@ static const palette_t PAL_DARK = {
     .deny = 0xEA4335, .veil = 0x000000 };
 static const palette_t *P = &PAL_LIGHT;
 static bool s_dark;
+static uint8_t s_dim_idx = 2;   // 40/60/80/100
 
 // ---- 状态 ----
 typedef enum { PG_HOME, PG_MENU, PG_ACTIVITY, PG_USAGE, PG_SETTINGS, PG_ABOUT } page_t;
@@ -70,12 +71,12 @@ static int64_t s_notify_until_us;
 // ---- 对象 ----
 static lv_obj_t *scr;
 static lv_obj_t *lbl_time, *lbl_batt;
-static lv_obj_t *batt_body, *batt_fill, *batt_nub;
+static lv_obj_t *batt_body, *batt_fill, *batt_nub, *wifi_canvas;
 static lv_obj_t *page_cont, *footer_label;
 static page_t s_page = PG_HOME;
 static int s_menu_sel;
 // 首页
-static lv_obj_t *lbl_date, *lbl_usage;
+static lv_obj_t *lbl_date, *lbl_usage, *lbl_status;
 // 覆盖层
 static lv_obj_t *veil, *ov_panel, *ov_tag, *ov_title, *ov_detail, *ov_page_dots;
 static overlay_t s_overlay = OV_NONE;
@@ -89,6 +90,8 @@ static const char *const WDAY_CN[7] =
 
 static void show_home(void);
 static void show_menu(void);
+static void settings_cycle_dim(void);
+static uint8_t s_set_sel;
 static void approval_ui_build_all(void);
 
 // ======================================================================
@@ -140,23 +143,28 @@ static lv_obj_t *make_footer_label(lv_obj_t *parent) {
 // 喜鹊精灵（像素画 ×2；# 墨 W 白 A 蓝 . 透明）
 // ======================================================================
 static const char *const MAGPIE[] = {
-    "..............#####.....",
-    ".............#######....",
-    ".............##E####AA..",
-    "............########....",
-    "...........##########...",
-    "..........############..",
-    ".........W############..",
-    "........W############...",
-    ".......W###########.....",
-    "......W###########......",
-    ".....W##########........",
-    "....W#########..........",
-    "...W########............",
-    "..W#######..............",
-    "....####................",
+    " ##                                ",
+    " ####                  #######     ",
+    " #####                ##########   ",
+    "#######              ##############",
+    " #######            ############   ",
+    "########            ###########    ",
+    "#########         ############     ",
+    " #########      ####    #######    ",
+    "   ########   ###       ########   ",
+    "     ##########       ##########   ",
+    "       #######    ######  ######   ",
+    "        ###############    #####   ",
+    "        ##############        ##   ",
+    "       #############          ##   ",
+    "       ###########            #    ",
+    "       ########              #     ",
+    "          ####              #      ",
+    "            ##             #       ",
+    "              ##        ###        ",
+    "                ########           ",
 };
-#define MAGPIE_W 24
+#define MAGPIE_W 36
 #define MAGPIE_H (int)(sizeof(MAGPIE) / sizeof(MAGPIE[0]))
 #define MP_SCALE 2
 static uint16_t magpie_buf[MAGPIE_W * MP_SCALE * MAGPIE_H * MP_SCALE];
@@ -210,43 +218,46 @@ static void wifi_icon_draw(bool active) {
 }
 
 static void build_status_bar(void) {
+    // 水平一行：时间(左) …… 电池框(百分比在内,绿) + WiFi扇形(右)
     lbl_time = lv_label_create(scr);
     lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl_time, lv_color_hex(P->ink), 0);
     lv_label_set_text(lbl_time, "--:--");
     lv_obj_set_pos(lbl_time, 20, 10);
 
-    // 右簇：WiFi 扇形 + 电池框(含进度) + 百分比
-    wifi_canvas = lv_canvas_create(scr);
-    lv_canvas_set_buffer(wifi_canvas, wifi_buf, 18, 13, LV_COLOR_FORMAT_RGB565);
-    lv_obj_set_pos(wifi_canvas, 132, 9);
-
+    // 电池框：36x18，百分比画在里面（绿色）
     batt_body = lv_obj_create(scr);
     style_reset(batt_body);
-    lv_obj_set_size(batt_body, 20, 10);
-    lv_obj_set_style_radius(batt_body, 2, 0);
+    lv_obj_set_size(batt_body, 36, 18);
+    lv_obj_set_style_radius(batt_body, 4, 0);
     lv_obj_set_style_border_width(batt_body, 1, 0);
-    lv_obj_set_style_border_color(batt_body, lv_color_hex(P->body), 0);
-    lv_obj_set_pos(batt_body, 156, 10);
-
-    batt_nub = lv_obj_create(scr);
-    style_reset(batt_nub);
-    lv_obj_set_size(batt_nub, 2, 4);
-    lv_obj_set_style_radius(batt_nub, 1, 0);
-    lv_obj_set_style_bg_opa(batt_nub, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(batt_nub, lv_color_hex(P->body), 0);
-    lv_obj_set_pos(batt_nub, 177, 13);
+    lv_obj_set_style_border_color(batt_body, lv_color_hex(P->sub), 0);
+    lv_obj_set_pos(batt_body, 148, 7);
 
     batt_fill = lv_obj_create(batt_body);
     style_reset(batt_fill);
-    lv_obj_set_size(batt_fill, 2, 6);
+    lv_obj_set_size(batt_fill, 4, 3);
     lv_obj_set_style_bg_opa(batt_fill, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(batt_fill, lv_color_hex(P->body), 0);
-    lv_obj_set_pos(batt_fill, 2, 1);
+    lv_obj_set_style_bg_color(batt_fill, lv_color_hex(P->allow), 0);
+    lv_obj_set_pos(batt_fill, 2, 12);
 
-    lbl_batt = make_label(scr, &lv_font_montserrat_14, P->body, 184, 10, 40);
-    lv_obj_set_style_text_align(lbl_batt, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_label_set_text(lbl_batt, "--%");
+    lbl_batt = lv_label_create(batt_body);
+    lv_obj_set_style_text_font(lbl_batt, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl_batt, lv_color_hex(P->allow), 0);
+    lv_label_set_text(lbl_batt, "--");
+    lv_obj_center(lbl_batt);
+
+    batt_nub = lv_obj_create(scr);
+    style_reset(batt_nub);
+    lv_obj_set_size(batt_nub, 2, 6);
+    lv_obj_set_style_radius(batt_nub, 1, 0);
+    lv_obj_set_style_bg_opa(batt_nub, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(batt_nub, lv_color_hex(P->sub), 0);
+    lv_obj_set_pos(batt_nub, 185, 13);
+
+    wifi_canvas = lv_canvas_create(scr);
+    lv_canvas_set_buffer(wifi_canvas, wifi_buf, 18, 13, LV_COLOR_FORMAT_RGB565);
+    lv_obj_set_pos(wifi_canvas, 194, 9);
 
     lv_obj_t *line = lv_obj_create(scr);
     style_reset(line);
@@ -260,20 +271,29 @@ static void refresh_signal(void) {
     wifi_icon_draw(s_rssi != -100 && s_rssi > -85);
 }
 
+static int backlight_level(void) {
+    static const int kLevels[4] = { 40, 60, 80, 100 };
+    return kLevels[s_dim_idx];
+}
+
+static void apply_backlight(void) {
+    bsp_display_backlight(backlight_level());
+}
+
 static void refresh_battery(void) {
     int soc = bsp_battery_soc();
     if (soc < 0) {
-        lv_label_set_text(lbl_batt, "--%");
+        lv_label_set_text(lbl_batt, "--");
         lv_obj_set_style_text_color(lbl_batt, lv_color_hex(P->sub), 0);
-        lv_obj_set_size(batt_fill, 2, 6);
+        lv_obj_set_size(batt_fill, 4, 3);
         lv_obj_set_style_bg_color(batt_fill, lv_color_hex(P->hair), 0);
     } else {
-        lv_label_set_text_fmt(lbl_batt, "%d%%", soc);
+        lv_label_set_text_fmt(lbl_batt, "%d", soc);
         lv_obj_set_style_text_color(lbl_batt,
-            lv_color_hex(soc <= 20 ? P->deny : P->body), 0);
-        lv_obj_set_size(batt_fill, 2 + soc * 14 / 100, 6);
+            lv_color_hex(soc <= 20 ? P->deny : P->allow), 0);
+        lv_obj_set_size(batt_fill, 2 + soc * 30 / 100, 3);
         lv_obj_set_style_bg_color(batt_fill,
-            lv_color_hex(soc <= 20 ? P->deny : P->body), 0);
+            lv_color_hex(soc <= 20 ? P->deny : P->allow), 0);
     }
 }
 
@@ -406,24 +426,43 @@ static void show_usage_page(void) {
 }
 
 // ======================================================================
-// 设置页（深色模式，NVS 持久化）
+// 设置页（外观 + 屏幕调光，NVS 持久化，双行选择）
 // ======================================================================
 static void settings_toggle_dark(void);
 
 static void show_settings_page(void) {
     s_page = PG_SETTINGS;
     open_page_container();
-    lv_obj_t *card = make_card(page_cont, 208, 52);
-    lv_obj_set_style_pad_hor(card, 12, 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(P->accent), 0);
-    lv_obj_t *t = make_label(card, &app_font_16,
-                             P->ink, 0, 16, 120);
-    lv_label_set_text(t, "深色模式");
-    lv_obj_t *v = make_label(card, &app_font_16,
-                             s_dark ? P->accent : P->sub, 130, 16, 66);
-    lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_label_set_text(v, s_dark ? "开" : "关");
-    ui_footer("OK 切换 · 长按返回");
+    lv_obj_set_flex_flow(page_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(page_cont, 8, 0);
+    // 行 0：外观（深色/浅色）
+    lv_obj_t *r0 = make_card(page_cont, 208, 52);
+    lv_obj_set_style_pad_hor(r0, 12, 0);
+    if (s_set_sel == 0) {
+        lv_obj_set_style_bg_color(r0, lv_color_hex(P->sel_bg), 0);
+        lv_obj_set_style_border_color(r0, lv_color_hex(P->accent), 0);
+    }
+    lv_obj_t *t0 = make_label(r0, &app_font_16, P->ink, 0, 16, 110);
+    lv_label_set_text(t0, "外观");
+    lv_obj_t *v0 = make_label(r0, &app_font_16,
+                              s_dark ? P->accent : P->sub, 110, 16, 86);
+    lv_obj_set_style_text_align(v0, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(v0, s_dark ? "深色" : "浅色");
+    // 行 1：屏幕调光（40/60/80/100 循环）
+    lv_obj_t *r1 = make_card(page_cont, 208, 52);
+    lv_obj_set_style_pad_hor(r1, 12, 0);
+    if (s_set_sel == 1) {
+        lv_obj_set_style_bg_color(r1, lv_color_hex(P->sel_bg), 0);
+        lv_obj_set_style_border_color(r1, lv_color_hex(P->accent), 0);
+    }
+    lv_obj_t *t1 = make_label(r1, &app_font_16, P->ink, 0, 16, 110);
+    lv_label_set_text(t1, "屏幕调光");
+    static const char *const kDimTxt[4] = { "40%", "60%", "80%", "100%" };
+    lv_obj_t *v1 = make_label(r1, &lv_font_montserrat_14,
+                              s_set_sel == 1 ? P->accent : P->sub, 110, 19, 86);
+    lv_obj_set_style_text_align(v1, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(v1, kDimTxt[s_dim_idx]);
+    ui_footer("上下 选择 · OK 调整 · 长按返回");
 }
 
 static void settings_toggle_dark(void) {
@@ -435,8 +474,19 @@ static void settings_toggle_dark(void) {
         nvs_close(h);
     }
     P = s_dark ? &PAL_DARK : &PAL_LIGHT;
-    bsp_display_backlight(s_dark ? 45 : 70);
     approval_ui_build_all();
+    show_settings_page();
+}
+
+static void settings_cycle_dim(void) {
+    s_dim_idx = (s_dim_idx + 1) % 4;
+    nvs_handle_t h;
+    if (nvs_open("appr", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "dim", s_dim_idx);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    apply_backlight();
     show_settings_page();
 }
 
@@ -495,8 +545,11 @@ static void build_overlay(void) {
     lv_label_set_text(ov_page_dots, "1/2");
 }
 
+static int backlight_level(void);
+static void apply_backlight(void);
+
 static void overlay_brightness(bool boost) {
-    bsp_display_backlight(boost ? 100 : (s_dark ? 45 : 70));
+    bsp_display_backlight(boost ? 100 : backlight_level());
 }
 
 static void overlay_show(bool show) {
@@ -594,7 +647,8 @@ static void usage_apply(const ui_msg_t *m) {
     }
     s_usage_valid = true;
     if (s_page == PG_HOME && lbl_usage) {
-        lv_label_set_text(lbl_usage, s_usage_tokens);
+        lv_label_set_text(lbl_usage,
+            s_quota_n > 0 ? s_quotas[0].left : s_usage_tokens);
     }
 }
 
@@ -647,9 +701,19 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
                 case 2: show_about_page(); break;
             }
         }
+    } else if (s_page == PG_SETTINGS) {
+        if (btn == BSP_BTN_UP) {
+            s_set_sel = (s_set_sel + 1) % 2;
+            show_settings_page();
+        } else if (btn == BSP_BTN_DOWN) {
+            s_set_sel = (s_set_sel + 1) % 2;
+            show_settings_page();
+        } else if (btn == BSP_BTN_OK) {
+            if (s_set_sel == 0) settings_toggle_dark();
+            else settings_cycle_dim();
+        }
     } else if (btn == BSP_BTN_OK) {
-        if (s_page == PG_SETTINGS) settings_toggle_dark();
-        else show_menu();
+        show_menu();
     }
 }
 
@@ -711,8 +775,13 @@ void approval_ui_init(QueueHandle_t decision_out) {
         if (nvs_get_u8(h, "dark", &d) == ESP_OK && d) s_dark = true;
         nvs_close(h);
     }
+    if (nvs_open("appr", NVS_READONLY, &h) == ESP_OK) {
+        uint8_t d2 = 2;
+        if (nvs_get_u8(h, "dim", &d2) == ESP_OK && d2 < 4) s_dim_idx = d2;
+        nvs_close(h);
+    }
     P = s_dark ? &PAL_DARK : &PAL_LIGHT;
-    bsp_display_backlight(s_dark ? 45 : 70);
+    apply_backlight();
     approval_ui_build_all();
     show_home();
 }
@@ -754,9 +823,14 @@ void approval_ui_pump(void) {
 
 void approval_ui_set_time(int hour, int minute, int wday, int month, int day) {
     s_hour = hour; s_min = minute; s_wday = wday; s_month = month; s_day = day;
-    if (s_page == PG_HOME && lbl_date) {
-        lv_label_set_text_fmt(lbl_date, "%s  %d月%d日",
-                              WDAY_CN[s_wday % 7], s_month, s_day);
+    if (s_page == PG_HOME) {
+        if (lbl_date) {
+            lv_label_set_text_fmt(lbl_date, "%s\n%d月%d日",
+                                  WDAY_CN[s_wday % 7], s_month, s_day);
+        }
+        if (lbl_status) {
+            lv_label_set_text(lbl_status, "Magpie 用量");
+        }
     }
 }
 
