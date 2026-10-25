@@ -218,6 +218,19 @@ Claude Code (--permission-prompt-tool) → MCP stdio → 桥(approval-bridge/bri
 端到端证据：真实 codex 任务流量 → 插件 onRequest（诊断文件逐条）→ POST 204 → hub 广播 → 设备通知屏显示（canvas 采样 lit=2000）→ TTL 过期自动回待机。
 
 
+### 6.6 前端：功能机看板（2026-10-25 定稿并实现，提交 5a9fb33）
+
+**用户拍板的设计决策**：功能机看板结构；终端极简 × apple-liquid-glass 转译；审批"摘要+翻页+确认"；上中文字体；动效只保留按键确认闪烁（无滑入/无呼吸灯）。
+
+**liquid-glass → 240×320 TFT 转译规则**（approval_ui.c 顶注）：浅色底 0xF4F5F7（小屏背光下比深底通透）；统一面板+发丝线（禁碎卡片）；层级靠字号/灰阶（黑 0x14161A/正文 0x3A3E45/次级 0x8A8F98）；单强调蓝 0x0A6CFF 仅选中/agent/连接点；语义色仅 allow 绿/deny 红；"玻璃"只用于覆盖层 = 深色半透明蒙层(LV_OPA_70)+中央浅色圆角面板——恰好承载审批/通知覆盖弹窗。
+
+**信息架构**：HOME（Montserrat48 时钟[SNTP CST-8]+中文日期+右上电量+桥连接点）→ OK → 菜单（Magpie 活动[notify 环形缓冲 10 条]/Agent 统计/关于）→ 子页；覆盖层审批两页（P1 摘要"OK 详情 DOWN 拒绝" → P2 全文"OK 允许 DOWN 拒绝"，UP 回 P1）+ 决定闪烁（绿/红蒙层 3×150ms）；通知横条 TTL 自动消；OK 长按返回。
+
+**实现要点**：`approval_ui.c/h` 拥有全部 LVGL（pump 于 100ms lv_timer，线程纪律不破）；按键全部经 key 队列；中文用内置 `lv_font_source_han_sans_sc_16_cjk`（sdkconfig.defaults 开启；UI 文案受控故子集够用，正式多字号字体集留待打磨轮，按 lvgl-chinese-fonts.md Option B）；出站 JSON 一律 cJSON 构造（转义安全，Mimosa 拦截手工拼接后修正）。
+
+**ZCode 开源发现（2026-10-25）**：zai-org/ZCode Apache-2.0 全源码开放（桌面/Web/CLI/后端/RPC 协议与 Agent SDK）。`zcode` CLI 支持非交互调用（apps/zcode-cli/docs/usage），server 有 HTTP/WS + token（ZCODE_SERVER_AUTH_TOKEN）。**ZCode 审批适配器变得可行**（经 server WS 协议接管审批），列 §6.3 待办第二位。
+
+
 ---
 
 ## 7. 决策记录

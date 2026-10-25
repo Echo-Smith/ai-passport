@@ -208,6 +208,19 @@ The user chose the plugin route over polling (the bridge makes no outbound reque
 End-to-end evidence: real codex traffic → plugin onRequest (diag log per hit) → POST 204 → hub broadcast → device notification screen (canvas sampling lit=2000) → auto-return after TTL.
 
 
+### 6.6 Front end: function-phone dashboard (decided and implemented 2026-10-25, commit 5a9fb33)
+
+**User-approved design decisions**: function-phone dashboard structure; terminal-minimal translated from apple-liquid-glass; approvals as summary+page-through+confirm; Chinese font on; only motion is the decision confirmation flash (no slide-ins, no breathing light).
+
+**liquid-glass to 240x320 TFT translation rules** (see the header note in approval_ui.c): light ground 0xF4F5F7 (reads better than dark on a backlit small panel); one panel with hairline dividers (no fragmented cards); hierarchy via size and grayscale (ink 0x14161A / body 0x3A3E45 / sub 0x8A8F98); a single accent blue 0x0A6CFF reserved for selection/agent/link-dot; semantic colors only allow-green and deny-red; "glass" lives only on overlays = dark translucent veil (LV_OPA_70) plus a centered rounded light panel — which is exactly the approval/notification popup.
+
+**Information architecture**: HOME (Montserrat 48 clock [SNTP CST-8], Chinese date, battery top-right, bridge link dot) then OK opens the menu (Magpie activity [notify ring buffer of 10], agent counters, about) then sub-pages; approval overlay has two pages (P1 summary "OK detail, DOWN deny", P2 full command "OK allow, DOWN deny", UP returns) plus a decision flash (green/red veil 3x150 ms); notification bar auto-expires on TTL; OK long-press goes back.
+
+**Implementation notes**: approval_ui.c/h owns all LVGL (pump on a 100 ms lv_timer; threading rules intact); every key event goes through the key queue; Chinese uses the built-in lv_font_source_han_sans_sc_16_cjk (enabled in sdkconfig.defaults — the UI copy is a controlled list so the subset suffices; the formal multi-size font set per lvgl-chinese-fonts.md Option B waits for the polish pass); all outbound JSON is built with cJSON (escape-safe; corrected after the scanner rejected hand-concatenated strings).
+
+**ZCode open-source finding (2026-10-25)**: zai-org/ZCode is Apache-2.0 with full sources (desktop/web/CLI/backend/RPC protocol and Agent SDK). The zcode CLI supports non-interactive use (apps/zcode-cli/docs/usage) and the server exposes HTTP/WS with tokens (ZCODE_SERVER_AUTH_TOKEN). **A ZCode approval adapter is now feasible** (take over approvals over the server WS protocol); queued as the second item of §6.3 TODO.
+
+
 ---
 
 ## 7. Decision log
