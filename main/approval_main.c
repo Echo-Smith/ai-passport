@@ -11,6 +11,7 @@
 #include "wifi_cred.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -35,11 +36,11 @@ static const char *TAG = "approval";
 #define FIELD_DETAIL      160
 
 // ---- 应用状态 ----
-typedef enum { ST_WIFI, ST_BRIDGE, ST_IDLE, ST_PENDING } app_state_t;
+typedef enum { ST_WIFI, ST_BRIDGE, ST_IDLE, ST_PENDING, ST_NOTIFY } app_state_t;
 static volatile app_state_t s_state = ST_WIFI;
 
 // net → ui 队列消息
-typedef enum { UI_STATUS, UI_REQUEST, UI_CANCEL } ui_kind_t;
+typedef enum { UI_STATUS, UI_REQUEST, UI_CANCEL, UI_NOTIFY } ui_kind_t;
 typedef struct {
     ui_kind_t kind;
     char id[FIELD_ID];
@@ -58,7 +59,8 @@ typedef struct {
 
 static QueueHandle_t s_ui_queue;    // net_task → LVGL 主任务
 static QueueHandle_t s_net_queue;   // 按键回调 → net_task
-static char s_pending_id[FIELD_ID]; // 当前待决请求(仅主任务/net 任务按约定分写, 先走通不加锁)
+static char s_pending_id[FIELD_ID];
+static int64_t s_notify_until_us;  // 0=无通知显示中 // 当前待决请求(仅主任务/net 任务按约定分写, 先走通不加锁)
 
 // ==========================================================================
 // Wi-Fi STA（标准 IDF 模式；模拟器的虚拟网络层会接管实际连通性）
@@ -181,6 +183,18 @@ static void net_task(void *arg) {
                             cJSON_GetStringValue(cJSON_GetObjectItem(root, "type"));
                         if (type && strcmp(type, "request") == 0) {
                             dispatch_request(sock, root);
+                        } else if (type && strcmp(type, "notify") == 0) {
+                            const char *agent = cJSON_GetStringValue(cJSON_GetObjectItem(root, "agent"));
+                            const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
+                            const char *detail = cJSON_GetStringValue(cJSON_GetObjectItem(root, "detail"));
+                            cJSON *ttl = cJSON_GetObjectItem(root, "ttl_s");
+                            ui_msg_t m = { .kind = UI_NOTIFY,
+                                           .timeout_s = ttl ? ttl->valueint : 5 };
+                            strlcpy(m.agent, agent ? agent : "?", sizeof(m.agent));
+                            strlcpy(m.title, title ? title : "(activity)", sizeof(m.title));
+                            strlcpy(m.detail, detail ? detail : "", sizeof(m.detail));
+                            xQueueSend(s_ui_queue, &m, 0);
+                            ESP_LOGI(TAG, "活动通知 [%s] %s", m.agent, m.title);
                         } else if (type && strcmp(type, "cancel") == 0) {
                             ui_msg_t m = { .kind = UI_CANCEL };
                             const char *id =
@@ -290,10 +304,31 @@ static void ui_timer_cb(lv_timer_t *t) {
             lv_label_set_text_fmt(s_lbl_agent, "%s", m.agent);
             lv_label_set_text_fmt(s_lbl_title, "%s", m.title);
             lv_label_set_text_fmt(s_lbl_detail, "%s", m.detail);
+            lv_obj_set_style_text_color(s_lbl_hint, lv_color_hex(0x7A2020), 0);
+            lv_label_set_text(s_lbl_hint, "OK: allow   DOWN: deny");
             lv_screen_load(s_pending_scr);
+            s_notify_until_us = 0;
+        } else if (m.kind == UI_NOTIFY) {
+            lv_label_set_text_fmt(s_lbl_agent, "%s", m.agent);
+            lv_label_set_text_fmt(s_lbl_title, "%s", m.title);
+            lv_label_set_text_fmt(s_lbl_detail, "%s", m.detail);
+            lv_obj_set_style_text_color(s_lbl_hint, lv_color_hex(0x2E6E4E), 0);
+            lv_label_set_text(s_lbl_hint, "any key: dismiss");
+            lv_screen_load(s_pending_scr);
+            s_state = ST_NOTIFY;
+            s_notify_until_us = esp_timer_get_time()
+                                + (int64_t)m.timeout_s * 1000 * 1000;
         } else {
             lv_screen_load(s_status_scr);
+            s_notify_until_us = 0;
         }
+    }
+    // 通知到期自动回待机
+    if (s_state == ST_NOTIFY && s_notify_until_us
+        && esp_timer_get_time() >= s_notify_until_us) {
+        lv_screen_load(s_status_scr);
+        s_notify_until_us = 0;
+        s_state = ST_IDLE;
     }
     if (s_state == ST_WIFI) {
         lv_label_set_text(s_lbl_state, "Wi-Fi connecting...");
@@ -307,7 +342,14 @@ static void ui_timer_cb(lv_timer_t *t) {
 // ==========================================================================
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     (void)user;
-    if (ev != BSP_BTN_PRESS || s_state != ST_PENDING) return;
+    if (ev != BSP_BTN_PRESS) return;
+    if (s_state == ST_NOTIFY) {
+        s_state = ST_IDLE;   // 任意键跳过通知，回待机(下一轮 UI tick 切屏)
+        ui_msg_t m = { .kind = UI_CANCEL };
+        xQueueSend(s_ui_queue, &m, 0);
+        return;
+    }
+    if (s_state != ST_PENDING) return;
     net_kind_t kind = btn == BSP_BTN_OK ? NET_DECISION_ALLOW : NET_DECISION_DENY;
     if (btn != BSP_BTN_OK && btn != BSP_BTN_DOWN) return;
     net_msg_t nm = { .kind = kind };
