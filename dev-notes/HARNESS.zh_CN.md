@@ -201,6 +201,23 @@ Claude Code (--permission-prompt-tool) → MCP stdio → 桥(approval-bridge/bri
 
 **端到端证据**：模拟器设备审批屏显示 codex 命令 → 设备 OK → hub 收 allow → 适配器回 accept → Codex 执行 `touch /tmp/codex-e2e.txt` → turn 完成 exit 0，文件真实创建。
 
+### 6.5 Magpie 活动通知接入（2026-10-25 走通，插件路线）
+
+用户拍板弃轮询、走 Magpie 插件（桥不出站请求，规避环回限制）。链路：
+`notify.hooks.ts（Magpie Bun 宿主内 onRequest 钩子）→ node:http POST 127.0.0.1:7789/notify（hub 新增 HTTP 入口，仅环回监听 + token 头校验）→ 广播设备 → 通知屏（TTL 自动回退/任意键跳过）`。
+
+**关键实测事实**：
+- hooks 文件须**具名导出** `onRequest(body, ctx)`（默认导出无效，报 "magpie.hooks exports no onRequest"）；不改请求体就返回 undefined
+- ctx 字段：`agent`（如 "codex"）、`model`、`cwd`、`session`（隐私，不外传）、`path`（如 /backend-api/codex/responses）
+- **宿主 Bun 的 fetch 受 magpie 代理 env 影响不转发 127.0.0.1** → 用 `node:http` 直连解决
+- 插件按路径安装：`magpie plugin add <path>/notify.hooks.ts`；卸载 rm
+- 节流 10s/同 (agent,model)；设备通知 TTL 5s
+- 已知展示瑕疵（前端阶段修）：待机屏状态行残留启动文本；ZCode 会话流量被 ctx.agent 识别为 clientInfo 名（"approval-bridge"）而非 "zcode"
+- 附带确认：用户生态 = ZCode + Codex + WorkBuddy（腾讯，Magpie 社区供应商插件）全在 Magpie 路由下——一个插件覆盖全部三个 Agent 的活动
+
+端到端证据：真实 codex 任务流量 → 插件 onRequest（诊断文件逐条）→ POST 204 → hub 广播 → 设备通知屏显示（canvas 采样 lit=2000）→ TTL 过期自动回待机。
+
+
 ---
 
 ## 7. 决策记录

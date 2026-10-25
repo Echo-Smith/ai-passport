@@ -192,6 +192,22 @@ Claude Code (--permission-prompt-tool) → MCP stdio → bridge (approval-bridge
 
 **End-to-end evidence**: the simulator device rendered the codex command on its approval screen, the device OK press returned allow to the hub, the adapter answered accept, Codex executed `touch /tmp/codex-e2e.txt`, the turn completed with exit 0 and the file exists.
 
+### 6.5 Magpie activity notifications (end-to-end 2026-10-25, plugin route)
+
+The user chose the plugin route over polling (the bridge makes no outbound request, sidestepping the loopback restriction). Chain: `notify.hooks.ts (onRequest hook inside Magpie's Bun host) → node:http POST 127.0.0.1:7789/notify (new loopback-only HTTP entry on the hub, token-header auth) → broadcast to the device → notification screen (TTL auto-dismiss / any key skips)`.
+
+**Measured facts**:
+- a hooks file must use a **named export** `onRequest(body, ctx)` (default exports fail with "magpie.hooks exports no onRequest"); return undefined to leave the body untouched
+- ctx fields: `agent` (e.g. "codex"), `model`, `cwd`, `session` (private, never forwarded), `path` (e.g. /backend-api/codex/responses)
+- **the host Bun fetch honors magpie's proxy env and will not reach 127.0.0.1** — fixed by using `node:http` directly
+- install by path with `magpie plugin add <path>/notify.hooks.ts`; remove with rm
+- throttled to one push per (agent, model) per 10 s; device TTL 5 s
+- known display nits (for the front-end pass): the idle status line keeps boot-time text; ZCode-session traffic shows up under the clientInfo name ("approval-bridge") rather than "zcode"
+- confirmed in passing: the user's fleet — ZCode + Codex + WorkBuddy (Tencent, via the community provider plugin) — all route through Magpie, so one hook covers all three agents
+
+End-to-end evidence: real codex traffic → plugin onRequest (diag log per hit) → POST 204 → hub broadcast → device notification screen (canvas sampling lit=2000) → auto-return after TTL.
+
+
 ---
 
 ## 7. Decision log
