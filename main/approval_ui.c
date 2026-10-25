@@ -21,6 +21,7 @@
 #include "esp_timer.h"
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 static const char *TAG = "approval_ui";
 
@@ -52,12 +53,6 @@ static QueueHandle_t s_msg_q;
 static QueueHandle_t s_key_q;
 typedef struct { bsp_btn_t btn; bsp_btn_ev_t ev; } key_evt_t;
 
-// 活动环形缓冲
-#define ACTIVITY_MAX 10
-typedef struct { char agent[16]; char model[40]; char at[24]; } activity_t;
-static activity_t s_activity[ACTIVITY_MAX];
-static int s_activity_count;
-
 // 用量快照
 static char s_usage_tokens[24];
 static struct { char name[24]; char left[24]; } s_quotas[UI_QUOTA_MAX];
@@ -74,7 +69,8 @@ static int64_t s_notify_until_us;
 
 // ---- 对象 ----
 static lv_obj_t *scr;
-static lv_obj_t *lbl_time, *lbl_batt, *sig_bars[3];
+static lv_obj_t *lbl_time, *lbl_batt;
+static lv_obj_t *batt_body, *batt_fill, *batt_nub;
 static lv_obj_t *page_cont, *footer_label;
 static page_t s_page = PG_HOME;
 static int s_menu_sel;
@@ -144,23 +140,23 @@ static lv_obj_t *make_footer_label(lv_obj_t *parent) {
 // 喜鹊精灵（像素画 ×2；# 墨 W 白 A 蓝 . 透明）
 // ======================================================================
 static const char *const MAGPIE[] = {
-    "......####..........",
-    ".....######.........",
-    "..A.##W####.........",
-    "...######...........",
-    "....########........",
-    "...##########..##...",
-    "..W#########..###...",
-    "..W########..###....",
-    "...######..###......",
-    "....W###..##........",
-    ".....BB#..#.........",
-    "....BBBB#...........",
-    ".....BB.............",
-    "......#.............",
-    "...#...#............",
+    "..............#####.....",
+    ".............#######....",
+    ".............##E####AA..",
+    "............########....",
+    "...........##########...",
+    "..........############..",
+    ".........W############..",
+    "........W############...",
+    ".......W###########.....",
+    "......W###########......",
+    ".....W##########........",
+    "....W#########..........",
+    "...W########............",
+    "..W#######..............",
+    "....####................",
 };
-#define MAGPIE_W 20
+#define MAGPIE_W 24
 #define MAGPIE_H (int)(sizeof(MAGPIE) / sizeof(MAGPIE[0]))
 #define MP_SCALE 2
 static uint16_t magpie_buf[MAGPIE_W * MP_SCALE * MAGPIE_H * MP_SCALE];
@@ -175,7 +171,7 @@ static void magpie_build(lv_obj_t *parent) {
             char c = MAGPIE[ry][rx];
             uint32_t col;
             if (c == '#') col = P->ink;
-            else if (c == 'W' || c == 'B') col = 0xFFFFFF;
+            else if (c == 'W' || c == 'E') col = 0xFFFFFF;
             else if (c == 'A') col = P->accent;
             else continue;
             for (int dy = 0; dy < MP_SCALE; dy++)
@@ -191,23 +187,64 @@ static void magpie_build(lv_obj_t *parent) {
 // ======================================================================
 // 状态栏（全局）：时间左 / 信号+电量右
 // ======================================================================
+// Wi-Fi 扇形图标（iOS 风格三弧，像素直绘）
+static uint16_t wifi_buf[18 * 13];
+static lv_obj_t *wifi_canvas;
+
+static void wifi_icon_draw(bool active) {
+    uint32_t col = active ? P->ink : P->hair;
+    lv_canvas_fill_bg(wifi_canvas, lv_color_hex(P->ground), LV_OPA_COVER);
+    const int cx = 9, cy = 12;
+    for (int a = -52; a <= 52; a++) {
+        float rad = (float)a * 3.14159f / 180.0f;
+        float sn = sinf(rad), cs = cosf(rad);
+        lv_canvas_set_px(wifi_canvas, cx + (int)(8.0f * sn),
+                         cy - (int)(8.0f * cs), lv_color_hex(col), LV_OPA_COVER);
+        lv_canvas_set_px(wifi_canvas, cx + (int)(5.0f * sn),
+                         cy - (int)(5.0f * cs), lv_color_hex(col), LV_OPA_COVER);
+    }
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++)
+            lv_canvas_set_px(wifi_canvas, cx + dx, cy - 2 + dy,
+                             lv_color_hex(col), LV_OPA_COVER);
+}
+
 static void build_status_bar(void) {
     lbl_time = lv_label_create(scr);
-    lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl_time, lv_color_hex(P->ink), 0);
     lv_label_set_text(lbl_time, "--:--");
-    lv_obj_set_pos(lbl_time, 20, 8);
+    lv_obj_set_pos(lbl_time, 20, 10);
 
-    for (int i = 0; i < 3; i++) {
-        sig_bars[i] = lv_obj_create(scr);
-        style_reset(sig_bars[i]);
-        lv_obj_set_size(sig_bars[i], 4, 5 + i * 3);
-        lv_obj_set_style_bg_opa(sig_bars[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(sig_bars[i], lv_color_hex(P->hair), 0);
-        lv_obj_set_pos(sig_bars[i], 146 + i * 6, 26 - (5 + i * 3));
-    }
+    // 右簇：WiFi 扇形 + 电池框(含进度) + 百分比
+    wifi_canvas = lv_canvas_create(scr);
+    lv_canvas_set_buffer(wifi_canvas, wifi_buf, 18, 13, LV_COLOR_FORMAT_RGB565);
+    lv_obj_set_pos(wifi_canvas, 132, 9);
 
-    lbl_batt = make_label(scr, &lv_font_montserrat_14, P->sub, 176, 10, 46);
+    batt_body = lv_obj_create(scr);
+    style_reset(batt_body);
+    lv_obj_set_size(batt_body, 20, 10);
+    lv_obj_set_style_radius(batt_body, 2, 0);
+    lv_obj_set_style_border_width(batt_body, 1, 0);
+    lv_obj_set_style_border_color(batt_body, lv_color_hex(P->body), 0);
+    lv_obj_set_pos(batt_body, 156, 10);
+
+    batt_nub = lv_obj_create(scr);
+    style_reset(batt_nub);
+    lv_obj_set_size(batt_nub, 2, 4);
+    lv_obj_set_style_radius(batt_nub, 1, 0);
+    lv_obj_set_style_bg_opa(batt_nub, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(batt_nub, lv_color_hex(P->body), 0);
+    lv_obj_set_pos(batt_nub, 177, 13);
+
+    batt_fill = lv_obj_create(batt_body);
+    style_reset(batt_fill);
+    lv_obj_set_size(batt_fill, 2, 6);
+    lv_obj_set_style_bg_opa(batt_fill, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(batt_fill, lv_color_hex(P->body), 0);
+    lv_obj_set_pos(batt_fill, 2, 1);
+
+    lbl_batt = make_label(scr, &lv_font_montserrat_14, P->body, 184, 10, 40);
     lv_obj_set_style_text_align(lbl_batt, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(lbl_batt, "--%");
 
@@ -220,16 +257,7 @@ static void build_status_bar(void) {
 }
 
 static void refresh_signal(void) {
-    int bars;
-    if (s_rssi == -100) bars = 0;
-    else if (s_rssi >= -55) bars = 3;
-    else if (s_rssi >= -67) bars = 2;
-    else if (s_rssi >= -78) bars = 1;
-    else bars = 0;
-    for (int i = 0; i < 3; i++) {
-        lv_obj_set_style_bg_color(sig_bars[i],
-            lv_color_hex(i < bars ? P->ink : P->hair), 0);
-    }
+    wifi_icon_draw(s_rssi != -100 && s_rssi > -85);
 }
 
 static void refresh_battery(void) {
@@ -237,9 +265,14 @@ static void refresh_battery(void) {
     if (soc < 0) {
         lv_label_set_text(lbl_batt, "--%");
         lv_obj_set_style_text_color(lbl_batt, lv_color_hex(P->sub), 0);
+        lv_obj_set_size(batt_fill, 2, 6);
+        lv_obj_set_style_bg_color(batt_fill, lv_color_hex(P->hair), 0);
     } else {
         lv_label_set_text_fmt(lbl_batt, "%d%%", soc);
         lv_obj_set_style_text_color(lbl_batt,
+            lv_color_hex(soc <= 20 ? P->deny : P->body), 0);
+        lv_obj_set_size(batt_fill, 2 + soc * 14 / 100, 6);
+        lv_obj_set_style_bg_color(batt_fill,
             lv_color_hex(soc <= 20 ? P->deny : P->body), 0);
     }
 }
@@ -292,8 +325,8 @@ static void show_home(void) {
 // 菜单（灰底 + 白卡片）
 // ======================================================================
 static const char *const MENU_ITEMS[] =
-    { "Magpie 活动", "用量与额度", "设置", "关于" };
-#define MENU_COUNT 4
+    { "用量与额度", "设置", "关于" };
+#define MENU_COUNT 3
 static lv_obj_t *menu_list;
 
 static void menu_refresh(void) {
@@ -335,39 +368,6 @@ static void show_menu(void) {
 
 // ======================================================================
 // Magpie 活动页
-// ======================================================================
-static void show_activity_page(void) {
-    s_page = PG_ACTIVITY;
-    open_page_container();
-    int n = s_activity_count < ACTIVITY_MAX ? s_activity_count : ACTIVITY_MAX;
-    lv_obj_t *list = lv_obj_create(page_cont);
-    style_reset(list);
-    lv_obj_set_size(list, 208, 244);
-    lv_obj_set_pos(list, 0, 0);
-    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(list, 6, 0);
-    if (n == 0) {
-        lv_obj_t *e = make_label(list, &app_font_16,
-                                 P->sub, 4, 8, 196);
-        lv_label_set_text(e, "暂无活动（等待 Agent 流量）");
-    }
-    for (int i = 0; i < n; i++) {
-        lv_obj_t *card = make_card(list, 208, 56);
-        lv_obj_set_style_pad_hor(card, 12, 0);
-        char head[64];
-        snprintf(head, sizeof(head), "%s  %s", s_activity[i].at,
-                 s_activity[i].agent);
-        lv_obj_t *h = make_label(card, &app_font_16,
-                                 P->body, 0, 8, 184);
-        lv_label_set_text(h, head);
-        lv_obj_t *mo = make_label(card, &lv_font_montserrat_14, P->sub, 0, 32, 184);
-        lv_label_set_text(mo, s_activity[i].model);
-    }
-    ui_footer("OK 返回");
-}
-
-// ======================================================================
-// 用量与额度页
 // ======================================================================
 static void show_usage_page(void) {
     s_page = PG_USAGE;
@@ -478,7 +478,7 @@ static void build_overlay(void) {
     ov_panel = lv_obj_create(veil);
     style_reset(ov_panel);
     lv_obj_set_size(ov_panel, 208, 196);
-    lv_obj_set_pos(ov_panel, 16, 52);
+    lv_obj_set_pos(ov_panel, 16, 62);
     lv_obj_set_style_bg_color(ov_panel, lv_color_hex(P->panel), 0);
     lv_obj_set_style_bg_opa(ov_panel, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(ov_panel, 16, 0);
@@ -518,7 +518,7 @@ static void show_request_p1(void) {
     lv_obj_set_style_text_color(ov_detail, lv_color_hex(P->ink), 0);
     lv_label_set_text(ov_page_dots, "1/2");
     overlay_show(true);
-    ui_footer("OK 详情 · DOWN 拒绝");
+    ui_footer("OK 详情 · 长按OK 拒绝");
 }
 
 static void show_request_p2(void) {
@@ -530,7 +530,7 @@ static void show_request_p2(void) {
     lv_obj_set_style_text_color(ov_detail, lv_color_hex(P->ink), 0);
     lv_label_set_text(ov_page_dots, "2/2");
     overlay_show(true);
-    ui_footer("OK 允许 · UP 返回 · DOWN 拒绝");
+    ui_footer("OK 允许 · UP 返回 · 长按OK 拒绝");
 }
 
 static void show_notify_overlay(const ui_msg_t *m) {
@@ -550,12 +550,13 @@ static void start_flash(bool allow) {
     s_flash_allow = allow;
     s_flash_state = 6;
     s_flash_next_us = esp_timer_get_time() + 150 * 1000;
-    lv_obj_set_style_bg_color(veil, lv_color_hex(allow ? P->allow : P->deny), 0);
-    lv_obj_set_style_bg_opa(veil, LV_OPA_40, 0);
+    lv_obj_set_style_bg_color(veil,
+        lv_color_hex(allow ? P->allow : 0x000000), 0);
+    lv_obj_set_style_bg_opa(veil, LV_OPA_60, 0);
     lv_label_set_text(ov_page_dots, "");
     lv_label_set_text(ov_detail, allow ? "已允许" : "已拒绝");
     lv_obj_set_style_text_color(ov_detail,
-        lv_color_hex(allow ? P->allow : P->deny), 0);
+        lv_color_hex(allow ? 0xFFFFFF : P->sub), 0);
     ui_footer(allow ? "已允许" : "已拒绝");
 }
 
@@ -584,20 +585,6 @@ static void emit_decision(bool allow) {
     start_flash(allow);
 }
 
-static void activity_push(const ui_msg_t *m) {
-    activity_t *a = &s_activity[ACTIVITY_MAX - 1];
-    for (int i = ACTIVITY_MAX - 1; i > 0; i--) s_activity[i] = s_activity[i - 1];
-    strlcpy(a->agent, m->agent, sizeof(a->agent));
-    const char *sep = strstr(m->title, " / ");
-    strlcpy(a->model, sep ? sep + 3 : m->title, sizeof(a->model));
-    if (s_hour >= 0) {
-        snprintf(a->at, sizeof(a->at), "%02d:%02d", s_hour, s_min);
-    } else {
-        strlcpy(a->at, "--:--", sizeof(a->at));
-    }
-    if (s_activity_count < ACTIVITY_MAX) s_activity_count++;
-}
-
 static void usage_apply(const ui_msg_t *m) {
     strlcpy(s_usage_tokens, m->tokens, sizeof(s_usage_tokens));
     s_quota_n = m->quota_n;
@@ -617,15 +604,17 @@ static void usage_apply(const ui_msg_t *m) {
 static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
     if (ev == BSP_BTN_RELEASE) return;
 
-    if (s_overlay == OV_REQ_P1 && ev == BSP_BTN_CLICK) {
-        if (btn == BSP_BTN_OK) show_request_p2();
-        else if (btn == BSP_BTN_DOWN) emit_decision(false);
-        return;
-    }
-    if (s_overlay == OV_REQ_P2 && ev == BSP_BTN_CLICK) {
-        if (btn == BSP_BTN_OK) emit_decision(true);
-        else if (btn == BSP_BTN_DOWN) emit_decision(false);
-        else if (btn == BSP_BTN_UP) show_request_p1();
+    if (s_overlay == OV_REQ_P1 || s_overlay == OV_REQ_P2) {
+        if (ev == BSP_BTN_LONG && btn == BSP_BTN_OK) {
+            emit_decision(false);   // 长按 OK = 拒绝
+            return;
+        }
+        if (ev == BSP_BTN_CLICK) {
+            if (s_overlay == OV_REQ_P1 && btn == BSP_BTN_OK) show_request_p2();
+            else if (s_overlay == OV_REQ_P1 && btn == BSP_BTN_DOWN) show_request_p2();
+            else if (s_overlay == OV_REQ_P2 && btn == BSP_BTN_OK) emit_decision(true);
+            else if (s_overlay == OV_REQ_P2 && btn == BSP_BTN_UP) show_request_p1();
+        }
         return;
     }
     if (s_overlay == OV_NOTIFY && ev == BSP_BTN_CLICK) {
@@ -653,10 +642,9 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
             menu_refresh();
         } else if (btn == BSP_BTN_OK) {
             switch (s_menu_sel) {
-                case 0: show_activity_page(); break;
-                case 1: show_usage_page(); break;
-                case 2: show_settings_page(); break;
-                case 3: show_about_page(); break;
+                case 0: show_usage_page(); break;
+                case 1: show_settings_page(); break;
+                case 2: show_about_page(); break;
             }
         }
     } else if (btn == BSP_BTN_OK) {
@@ -678,7 +666,6 @@ static void handle_msg(const ui_msg_t *m) {
             show_request_p1();
             break;
         case UI_MSG_NOTIFY:
-            activity_push(m);
             if (s_overlay == OV_NONE || s_overlay == OV_NOTIFY) {
                 show_notify_overlay(m);
             }
