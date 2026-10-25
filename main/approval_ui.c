@@ -470,7 +470,7 @@ static void build_overlay(void) {
     lv_obj_set_pos(veil, 0, 0);
     lv_obj_set_size(veil, 240, 320);
     lv_obj_set_style_bg_color(veil, lv_color_hex(P->veil), 0);
-    lv_obj_set_style_bg_opa(veil, LV_OPA_70, 0);
+    lv_obj_set_style_bg_opa(veil, LV_OPA_50, 0);
     lv_obj_set_style_border_width(veil, 0, 0);
     lv_obj_set_style_radius(veil, 0, 0);
     lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
@@ -495,12 +495,18 @@ static void build_overlay(void) {
     lv_label_set_text(ov_page_dots, "1/2");
 }
 
+static void overlay_brightness(bool boost) {
+    bsp_display_backlight(boost ? 100 : (s_dark ? 45 : 70));
+}
+
 static void overlay_show(bool show) {
     if (show) {
         lv_obj_clear_flag(veil, LV_OBJ_FLAG_HIDDEN);
+        overlay_brightness(true);
     } else {
         lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
         s_overlay = OV_NONE;
+        overlay_brightness(false);
     }
 }
 
@@ -509,7 +515,7 @@ static void show_request_p1(void) {
     lv_label_set_text_fmt(ov_tag, "%s", s_req_agent);
     lv_label_set_text(ov_title, "请求确认");
     lv_label_set_text_fmt(ov_detail, "%.60s", s_req_title);
-    lv_obj_set_style_text_color(ov_detail, lv_color_hex(P->body), 0);
+    lv_obj_set_style_text_color(ov_detail, lv_color_hex(P->ink), 0);
     lv_label_set_text(ov_page_dots, "1/2");
     overlay_show(true);
     ui_footer("OK 详情 · DOWN 拒绝");
@@ -521,6 +527,7 @@ static void show_request_p2(void) {
     lv_label_set_text(ov_title, "完整命令");
     lv_label_set_text_fmt(ov_detail, "%.150s",
                           s_req_detail[0] ? s_req_detail : s_req_title);
+    lv_obj_set_style_text_color(ov_detail, lv_color_hex(P->ink), 0);
     lv_label_set_text(ov_page_dots, "2/2");
     overlay_show(true);
     ui_footer("OK 允许 · UP 返回 · DOWN 拒绝");
@@ -559,7 +566,7 @@ static void pump_flash(void) {
     s_flash_state--;
     if (!s_flash_state) {
         lv_obj_set_style_bg_color(veil, lv_color_hex(P->veil), 0);
-        lv_obj_set_style_bg_opa(veil, LV_OPA_70, 0);
+        lv_obj_set_style_bg_opa(veil, LV_OPA_50, 0);
         overlay_show(false);
         if (s_page == PG_HOME) ui_footer("OK 菜单");
         else if (s_page == PG_MENU) ui_footer("上下 选择 · OK 打开");
