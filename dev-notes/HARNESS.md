@@ -176,7 +176,21 @@ Claude Code (--permission-prompt-tool) → MCP stdio → bridge (approval-bridge
 
 **Simulator networking notes (read before reuse)**: the simulator Wi-Fi is the ESP-EMU virtual AP with fixed SSID `Emulator Host Bridge` / empty password (`wifi_cred.h` must match); start the server with `EMULATOR_NETWORK_ALLOW_PRIVATE=1` for LAN/host private addresses; the UART buffer holds only 52 lines and boot logs fill it — press the clear button before reading runtime logs; firmware entering the BLE ROM region crashes (unsupported-features.js), and the approval firmware keeps BT off.
 
-**TODO (reprioritized for the user's tools)**: (1) **Codex adapter**: bridge spawns `codex app-server` and answers its JSON-RPC approval methods, forwarding to the device (first target); (2) ZCode external approvals: feature request or accessibility fallback (deferred); (3) device deployment (real SSID/bridge IP into wifi_cred.h + segmented flash to preserve NVS); (4) UI polish and a CJK font (Chinese detail currently renders as boxes); (5) bridge auto-discovery via mDNS (borrow magpie-buddy's --discover) instead of a hardcoded IP.
+**TODO (updated 2026-10-25)**: (1) ~~Codex adapter~~ **done and verified end-to-end** (§6.4); (2) ZCode external approvals: feature request or accessibility fallback (deferred); (3) device deployment (real SSID/bridge IP into wifi_cred.h + segmented flash); (4) UI polish and a CJK font; (5) bridge auto-discovery via mDNS (borrow magpie-buddy's --discover).
+
+### 6.4 Codex adapter (end-to-end 2026-10-25)
+
+`bridge.py codex --task "..." --policy untrusted`: spawns the local `codex app-server` (binary auto-detected from PATH, then the VS Code extension `~/.vscode/extensions/openai.chatgpt-*/bin/*/codex`), forwards approvals to the device (agent name "codex"); device allow maps to accept and deny to decline (decline lets the agent continue the turn; cancel interrupts it and is not mapped yet).
+
+**Protocol facts measured on codex-cli 0.164.0-alpha.11.1**:
+- framing: newline-delimited JSON (simplified JSON-RPC without a jsonrpc field); `initialize` then `initialized` then `thread/start` (thread id at result.thread.id) then `turn/start` (params: threadId + input[{type:"text",text}] + approvalPolicy)
+- approvals arrive as server-to-client requests named **`item/commandExecution/requestApproval`** (params: command/cwd/commandActions/availableDecisions); the schema also defines fileChange/applyPatch/elicitation variants — the adapter catches anything ending in `*requestApproval`
+- decision enum: accept / acceptForSession / acceptWithExecpolicyAmendment / decline / cancel
+- **the policy decides whether approvals fire**: under `on-request` sandbox-safe commands run silently; `untrusted` prompts for every command (use this for remote approval)
+- the full protocol can be exported with `codex app-server generate-json-schema --out <dir>`
+- surprise finding: Codex ships an official **`remoteControl/*` subsystem** (pairing/status/client management) — worth investigating as a possible native remote channel later
+
+**End-to-end evidence**: the simulator device rendered the codex command on its approval screen, the device OK press returned allow to the hub, the adapter answered accept, Codex executed `touch /tmp/codex-e2e.txt`, the turn completed with exit 0 and the file exists.
 
 ---
 

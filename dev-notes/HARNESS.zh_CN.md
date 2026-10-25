@@ -185,7 +185,21 @@ Claude Code (--permission-prompt-tool) → MCP stdio → 桥(approval-bridge/bri
 
 **模拟器网络要点（复用必读）**：模拟器 Wi-Fi 是 ESP-EMU 虚拟 AP，SSID 固定 `Emulator Host Bridge`/空密码（`wifi_cred.h` 需匹配）；`EMULATOR_NETWORK_ALLOW_PRIVATE=1` 启动 server 才能访问局域网/宿主私有地址；UART 缓冲仅 52 行，启动日志会灌满，看运行期日志先点"清空"；BLE 区固件会崩溃（unsupported-features.js 检测 ROM 区），审批固件未启用 BT。
 
-**待办（按用户实际工具重排）**：① **Codex 适配器**：桥 spawn `codex app-server`，实现 JSON-RPC 审批方法（execCommandApproval 等）→ 转设备（第一目标）② ZCode 外部审批：向 ZCode 提需求或辅助功能兜底（暂缓）③ 真机部署（真 SSID/桥 IP 写入 wifi_cred.h + 分段烧录保 NVS）④ UI 打磨与 CJK 字体（当前中文详情显示方块，Montserrat 无 CJK）⑤ 桥地址自动发现（mDNS，可借鉴 magpie-buddy --discover）替代硬编码 IP。
+**待办（2026-10-25 更新）**：① ~~Codex 适配器~~ **已完成并端到端验证**（见 §6.4）② ZCode 外部审批：向 ZCode 提需求或辅助功能兜底（暂缓）③ 真机部署（真 SSID/桥 IP 写入 wifi_cred.h + 分段烧录保 NVS）④ UI 打磨与 CJK 字体 ⑤ 桥地址自动发现（mDNS，借鉴 magpie-buddy --discover）。
+
+### 6.4 Codex 适配器（2026-10-25 端到端走通）
+
+`bridge.py codex --task "..." --policy untrusted`：spawn 本机 `codex app-server`（二进制自动探测 PATH → VS Code 扩展 `~/.vscode/extensions/openai.chatgpt-*/bin/*/codex`），审批转设备（agent 名 "codex"），设备 allow→accept / deny→decline（decline 使 Agent 继续 turn；cancel 会中断 turn，暂不映射）。
+
+**协议实测事实（codex-cli 0.164.0-alpha.11.1）**：
+- framing：行分隔 JSON（无 jsonrpc 字段的简化 JSON-RPC）；`initialize`→`initialized`→`thread/start`（响应 result.thread.id）→`turn/start`（params: threadId + input[{type:"text",text}] + approvalPolicy）
+- 审批为 server→client 请求，方法名 **`item/commandExecution/requestApproval`**（params: command/cwd/commandActions/availableDecisions）；schema 还定义了 fileChange/applyPatch/elicitation 等变体——适配器按 `*requestApproval` 后缀统一捕获
+- 决定枚举：accept / acceptForSession / acceptWithExecpolicyAmendment / decline / cancel
+- **审批策略决定触发条件**：`on-request` 下沙箱内安全命令不弹审批；`untrusted` 下每条命令必弹（远程审批场景用这个）
+- 协议全貌可用 `codex app-server generate-json-schema --out <dir>` 导出
+- 意外发现：Codex 有官方 **`remoteControl/*` 子系统**（pairing/status/client 管理）——未来可调研是否直接复用其远程配对通道
+
+**端到端证据**：模拟器设备审批屏显示 codex 命令 → 设备 OK → hub 收 allow → 适配器回 accept → Codex 执行 `touch /tmp/codex-e2e.txt` → turn 完成 exit 0，文件真实创建。
 
 ---
 
