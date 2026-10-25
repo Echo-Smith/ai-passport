@@ -147,40 +147,52 @@ static lv_obj_t *make_footer_label(lv_obj_t *parent) {
 // 喜鹊精灵（像素画 ×2；# 墨 W 白 A 蓝 . 透明）
 // ======================================================================
 static const char *const MAGPIE[] = {
-    " ##                                ",
-    " ####                  #######     ",
-    " #####                ##########   ",
-    "#######              ##############",
-    " #######            ############   ",
-    "########            ###########    ",
-    "#########         ############     ",
-    " #########      ####    #######    ",
-    "   ########   ###       ########   ",
-    "     ##########       ##########   ",
-    "       #######    ######  ######   ",
-    "        ###############    #####   ",
-    "        ##############        ##   ",
-    "       #############          ##   ",
-    "       ###########            #    ",
-    "       ########              #     ",
-    "          ####              #      ",
-    "            ##             #       ",
-    "              ##        ###        ",
-    "                ########           ",
+    "###....................#####....",
+    ".####................###########",
+    "######..............############",
+    "#######............##########...",
+    "########..........###########...",
+    "..#######..............#######..",
+    ".....#########........#.#######.",
+    "......######......#####..######.",
+    "........#############.......###.",
+    ".......############.............",
+    "......##########................",
+    "........#####...................",
+    "...........##...................",
 };
-#define MAGPIE_W 36
+static const char *const MAGPIE_B[] = {
+    "###....................#####....",
+    ".####................###########",
+    "######.............#############",
+    "#######...........###########...",
+    "########............##########..",
+    "..#######.............#########.",
+    ".....#########....#####.#######.",
+    "......######..#######....######.",
+    "........###########.........#...",
+    ".......#######..................",
+    "......##########................",
+    "........#####...................",
+    "...........##...................",
+};
+#define MAGPIE_W 32
+#define MAGPIE_H 13
+
 #define MAGPIE_H (int)(sizeof(MAGPIE) / sizeof(MAGPIE[0]))
 #define MP_SCALE 2
 static uint16_t magpie_buf[MAGPIE_W * MP_SCALE * MAGPIE_H * MP_SCALE];
+static lv_obj_t *magpie_cv;
+static bool s_wag_b;                 // 当前是否帧 B
+static int s_wag_left;               // 剩余切换次数
+static int64_t s_wag_next_us;
 
-static void magpie_build(lv_obj_t *parent) {
-    lv_obj_t *canvas = lv_canvas_create(parent);
+static void magpie_draw(const char *const art[/*MAGPIE_H*/]) {
     const int w = MAGPIE_W * MP_SCALE, h = MAGPIE_H * MP_SCALE;
-    lv_canvas_set_buffer(canvas, magpie_buf, w, h, LV_COLOR_FORMAT_RGB565);
-    lv_canvas_fill_bg(canvas, lv_color_hex(P->ground), LV_OPA_COVER);
+    lv_canvas_fill_bg(magpie_cv, lv_color_hex(P->ground), LV_OPA_COVER);
     for (int ry = 0; ry < MAGPIE_H; ry++) {
         for (int rx = 0; rx < MAGPIE_W; rx++) {
-            char c = MAGPIE[ry][rx];
+            char c = art[ry][rx];
             uint32_t col;
             if (c == '#') col = P->ink;
             else if (c == 'W' || c == 'E') col = 0xFFFFFF;
@@ -188,80 +200,107 @@ static void magpie_build(lv_obj_t *parent) {
             else continue;
             for (int dy = 0; dy < MP_SCALE; dy++)
                 for (int dx = 0; dx < MP_SCALE; dx++)
-                    lv_canvas_set_px(canvas, rx * MP_SCALE + dx,
+                    lv_canvas_set_px(magpie_cv, rx * MP_SCALE + dx,
                                      ry * MP_SCALE + dy, lv_color_hex(col),
                                      LV_OPA_COVER);
         }
     }
-    lv_obj_set_pos(canvas, (240 - w) / 2, 56);
+    lv_obj_invalidate(magpie_cv);
+}
+
+static void magpie_build(lv_obj_t *parent) {
+    magpie_cv = lv_canvas_create(parent);
+    const int w = MAGPIE_W * MP_SCALE, h = MAGPIE_H * MP_SCALE;
+    lv_canvas_set_buffer(magpie_cv, magpie_buf, w, h, LV_COLOR_FORMAT_RGB565);
+    magpie_draw(MAGPIE);
+    lv_obj_set_pos(magpie_cv, 6, 0);   // 首页左上
+}
+
+// 摆翅：切帧 4 次（约 0.5s），非阻塞
+static void magpie_wag(void) {
+    s_wag_b = false;
+    s_wag_left = 4;
+    s_wag_next_us = esp_timer_get_time();
+}
+
+static void magpie_pump_wag(void) {
+    if (!s_wag_left) return;
+    int64_t now = esp_timer_get_time();
+    if (now < s_wag_next_us) return;
+    s_wag_next_us = now + 130 * 1000;
+    s_wag_left--;
+    s_wag_b = !s_wag_b;
+    magpie_draw(s_wag_b ? MAGPIE_B : MAGPIE);
 }
 
 // ======================================================================
 // 状态栏（全局）：时间左 / 信号+电量右
 // ======================================================================
-// Wi-Fi 扇形图标（iOS 风格三弧，像素直绘）
-static uint16_t wifi_buf[18 * 13];
+// Wi-Fi 扇形图标（加大版，像素直绘）
+static uint16_t wifi_buf[26 * 18];
 static lv_obj_t *wifi_canvas;
 
 static void wifi_icon_draw(bool active) {
     uint32_t col = active ? P->ink : P->hair;
     lv_canvas_fill_bg(wifi_canvas, lv_color_hex(P->ground), LV_OPA_COVER);
-    const int cx = 9, cy = 12;
-    for (int a = -52; a <= 52; a++) {
+    const int cx = 13, cy = 16;
+    for (int a = -54; a <= 54; a++) {
         float rad = (float)a * 3.14159f / 180.0f;
         float sn = sinf(rad), cs = cosf(rad);
-        lv_canvas_set_px(wifi_canvas, cx + (int)(8.0f * sn),
-                         cy - (int)(8.0f * cs), lv_color_hex(col), LV_OPA_COVER);
-        lv_canvas_set_px(wifi_canvas, cx + (int)(5.0f * sn),
-                         cy - (int)(5.0f * cs), lv_color_hex(col), LV_OPA_COVER);
+        for (int t = 0; t < 2; t++) {
+            lv_canvas_set_px(wifi_canvas, cx + (int)((11.5f - t) * sn),
+                             cy - (int)((11.5f - t) * cs),
+                             lv_color_hex(col), LV_OPA_COVER);
+        }
     }
     for (int dy = -1; dy <= 1; dy++)
-        for (int dx = -1; dx <= 1; dx++)
-            lv_canvas_set_px(wifi_canvas, cx + dx, cy - 2 + dy,
+        for (int dx = -2; dx <= 2; dx++)
+            lv_canvas_set_px(wifi_canvas, cx + dx, cy - 3 + dy,
                              lv_color_hex(col), LV_OPA_COVER);
 }
 
 static void build_status_bar(void) {
-    // 水平一行：时间(左) …… 电池框(百分比在内,绿) + WiFi扇形(右)
+    // 水平一行：时间(左) …… WiFi(大) → 电池(最右，百分比在框内，横向填充)
     lbl_time = lv_label_create(scr);
     lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl_time, lv_color_hex(P->ink), 0);
     lv_label_set_text(lbl_time, "--:--");
     lv_obj_set_pos(lbl_time, 20, 10);
 
-    // 电池框：36x18，百分比画在里面（绿色）
-    batt_body = lv_obj_create(scr);
-    style_reset(batt_body);
-    lv_obj_set_size(batt_body, 36, 18);
-    lv_obj_set_style_radius(batt_body, 4, 0);
-    lv_obj_set_style_border_width(batt_body, 1, 0);
-    lv_obj_set_style_border_color(batt_body, lv_color_hex(P->sub), 0);
-    lv_obj_set_pos(batt_body, 148, 7);
+    wifi_canvas = lv_canvas_create(scr);
+    lv_canvas_set_buffer(wifi_canvas, wifi_buf, 26, 18, LV_COLOR_FORMAT_RGB565);
+    lv_obj_set_pos(wifi_canvas, 112, 7);
 
-    batt_fill = lv_obj_create(batt_body);
+    // 电池（最右）：先画填充（横向、左→右），再画框和百分比（叠在上层）
+    batt_fill = lv_obj_create(scr);
     style_reset(batt_fill);
-    lv_obj_set_size(batt_fill, 4, 3);
+    lv_obj_set_size(batt_fill, 4, 12);
     lv_obj_set_style_bg_opa(batt_fill, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(batt_fill, lv_color_hex(P->allow), 0);
-    lv_obj_set_pos(batt_fill, 2, 12);
+    lv_obj_set_pos(batt_fill, 152, 10);
 
-    lbl_batt = lv_label_create(batt_body);
-    lv_obj_set_style_text_font(lbl_batt, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl_batt, lv_color_hex(P->allow), 0);
-    lv_label_set_text(lbl_batt, "--");
-    lv_obj_center(lbl_batt);
+    batt_body = lv_obj_create(scr);
+    style_reset(batt_body);
+    lv_obj_set_size(batt_body, 38, 18);
+    lv_obj_set_style_bg_opa(batt_body, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(batt_body, 1, 0);
+    lv_obj_set_style_border_color(batt_body, lv_color_hex(P->body), 0);
+    lv_obj_set_style_radius(batt_body, 3, 0);
+    lv_obj_set_pos(batt_body, 150, 8);
 
     batt_nub = lv_obj_create(scr);
     style_reset(batt_nub);
     lv_obj_set_size(batt_nub, 2, 6);
     lv_obj_set_style_radius(batt_nub, 1, 0);
     lv_obj_set_style_bg_opa(batt_nub, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(batt_nub, lv_color_hex(P->sub), 0);
-    lv_obj_set_pos(batt_nub, 185, 13);
+    lv_obj_set_style_bg_color(batt_nub, lv_color_hex(P->body), 0);
+    lv_obj_set_pos(batt_nub, 189, 14);
 
-    wifi_canvas = lv_canvas_create(scr);
-    lv_canvas_set_buffer(wifi_canvas, wifi_buf, 18, 13, LV_COLOR_FORMAT_RGB565);
-    lv_obj_set_pos(wifi_canvas, 194, 9);
+    lbl_batt = lv_label_create(scr);
+    lv_obj_set_style_text_font(lbl_batt, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl_batt, lv_color_hex(P->allow), 0);
+    lv_label_set_text(lbl_batt, "--");
+    lv_obj_set_pos(lbl_batt, 158, 10);
 
     lv_obj_t *line = lv_obj_create(scr);
     style_reset(line);
@@ -286,19 +325,20 @@ static void apply_backlight(void) {
 
 static void refresh_battery(void) {
     int soc = bsp_battery_soc();
+    uint32_t col;
     if (soc < 0) {
         lv_label_set_text(lbl_batt, "--");
         lv_obj_set_style_text_color(lbl_batt, lv_color_hex(P->sub), 0);
-        lv_obj_set_size(batt_fill, 4, 3);
-        lv_obj_set_style_bg_color(batt_fill, lv_color_hex(P->hair), 0);
+        lv_obj_set_size(batt_fill, 4, 12);
+        col = P->hair;
     } else {
         lv_label_set_text_fmt(lbl_batt, "%d", soc);
-        lv_obj_set_style_text_color(lbl_batt,
-            lv_color_hex(soc <= 20 ? P->deny : P->allow), 0);
-        lv_obj_set_size(batt_fill, 2 + soc * 30 / 100, 3);
-        lv_obj_set_style_bg_color(batt_fill,
-            lv_color_hex(soc <= 20 ? P->deny : P->allow), 0);
+        col = soc >= 60 ? P->allow : (soc >= 30 ? 0xE8A13A : P->deny);
+        lv_obj_set_style_text_color(lbl_batt, lv_color_hex(col), 0);
+        lv_obj_set_size(batt_fill, 2 + soc * 32 / 100, 12);
     }
+    lv_obj_set_style_bg_color(batt_fill, lv_color_hex(col), 0);
+    lv_obj_set_pos(batt_fill, 152, 10);
 }
 
 static void refresh_time(void) {
@@ -731,6 +771,7 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
 
     if (s_page == PG_HOME) {
         if (btn == BSP_BTN_OK) show_menu();
+        else magpie_wag();            // 闲按一下，它挥挥翅膀
     } else if (s_page == PG_MENU) {
         if (btn == BSP_BTN_UP) {
             s_menu_sel = (s_menu_sel + MENU_COUNT - 1) % MENU_COUNT;
@@ -864,6 +905,7 @@ void approval_ui_pump(void) {
     key_evt_t k;
     while (s_key_q && xQueueReceive(s_key_q, &k, 0) == pdTRUE) handle_key(k.btn, k.ev);
     pump_flash();
+    magpie_pump_wag();
     if (s_overlay == OV_NOTIFY && s_notify_until_us
         && esp_timer_get_time() >= s_notify_until_us) {
         overlay_show(false);
