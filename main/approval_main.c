@@ -8,7 +8,7 @@
 #include "bsp_battery.h"
 #include "bsp_pins.h"
 #include "approval_ui.h"
-#include "wifi_cred.h"
+#include "wifi_cred_gen.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -148,6 +148,24 @@ static void post_msg(cJSON *root, const char *type) {
     strlcpy(m.agent, agent ? agent : "?", sizeof(m.agent));
     strlcpy(m.title, title ? title : "(no title)", sizeof(m.title));
     strlcpy(m.detail, detail ? detail : "", sizeof(m.detail));
+    if (strcmp(type, "usage") == 0) {
+        m.kind = UI_MSG_USAGE;
+        const char *tokens = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tokens"));
+        strlcpy(m.tokens, tokens ? tokens : "", sizeof(m.tokens));
+        cJSON *quotas = cJSON_GetObjectItem(root, "quotas");
+        m.quota_n = 0;
+        cJSON *q;
+        cJSON_ArrayForEach(q, quotas) {
+            if (m.quota_n >= UI_QUOTA_MAX) break;
+            const char *qn = cJSON_GetStringValue(cJSON_GetObjectItem(q, "name"));
+            const char *qv = cJSON_GetStringValue(cJSON_GetObjectItem(q, "left"));
+            strlcpy(m.quotas[m.quota_n].name, qn ? qn : "?",
+                    sizeof(m.quotas[0].name));
+            strlcpy(m.quotas[m.quota_n].left, qv ? qv : "",
+                    sizeof(m.quotas[0].left));
+            m.quota_n++;
+        }
+    }
     approval_ui_post(&m);
 }
 
@@ -187,6 +205,7 @@ static void net_task(void *arg) {
                             cJSON_GetStringValue(cJSON_GetObjectItem(root, "type"));
                         if (type && (strcmp(type, "request") == 0
                                      || strcmp(type, "notify") == 0
+                                     || strcmp(type, "usage") == 0
                                      || strcmp(type, "cancel") == 0)) {
                             post_msg(root, type);
                         } else if (type && strcmp(type, "welcome") == 0) {
@@ -232,6 +251,16 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
 
 static void ui_pump_timer(lv_timer_t *t) {
     (void)t;
+    static int64_t last_rssi_us = 0;
+    if (esp_timer_get_time() - last_rssi_us > 3000000) {
+        last_rssi_us = esp_timer_get_time();
+        wifi_ap_record_t ap;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            approval_ui_set_rssi(ap.rssi);
+        } else {
+            approval_ui_set_rssi(-100);
+        }
+    }
     approval_ui_pump();
 }
 

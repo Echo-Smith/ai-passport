@@ -1,96 +1,109 @@
-// main/approval_ui.c —— 功能机看板 UI（终端极简 × liquid-glass 转译）。
+// main/approval_ui.c —— 功能机看板 UI（终端极简 × liquid-glass 转译，双主题）。
 //
-// 视觉体系（240×320 RGB565、圆角 30px 危险区、内容区 y≈36..284）：
-//   - 浅色底 (0xF4F5F7) + 统一表面 + 发丝线分隔（rgba0,0,0,7% → RGB565 0xE2E3E6）
-//   - 层级靠字号/灰阶：标题黑 0x14161A、正文 0x3A3E45、次级 0x8A8F98
-//   - 单强调蓝 0x0A6CFF，仅选中态/agent 标签/连接点；语义色仅 allow 绿/deny 红
-//   - "玻璃"只用于覆盖层：深色半透明蒙层 + 中央浅色圆角面板
-// 动效仅一种：按键决定后的确认闪烁（整块变色，低刷友好）；无滑入。
+// 布局总纲（240×320，圆角 30px 危险区）：
+//   顶部状态栏（全局）：左=时间(HH:MM)，右=Wi-Fi 信号三格 + 电量百分比
+//   中部内容区  y≈42..282：首页（喜鹊 + 日期 + 用量摘要）/ 菜单 / 子页（灰底白卡片）
+//   底部提示条（全局）：当前页/当前弹窗的按键说明
+//   覆盖层"玻璃"：深色蒙层 + 中央浅色面板（审批两页/通知），提示走底部条
+// 主题：浅色（默认）/ 深色（低功耗，背光联动 45%），NVS 持久化，设置页切换。
+// 动效仅保留：决定确认闪烁（整块变色 3×150ms）。
 //
-// 线程纪律：全部 LVGL 操作发生在 pump()（LVGL 定时器上下文）。
+// 线程纪律：全部 LVGL 操作发生在 pump()（LVGL 定时器上下文）；按键只入队。
 #include "approval_ui.h"
 #include "bsp_battery.h"
+#include "bsp_display.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
 #include "lvgl.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "freertos/queue.h"
 #include <string.h>
 #include <stdio.h>
 
 static const char *TAG = "approval_ui";
 
-// ---- 调色板（RGB565 由 lv_color_hex 转换） ----
-#define COL_GROUND   0xF4F5F7
-#define COL_PANEL    0xFFFFFF
-#define COL_HAIR     0xE2E3E6
-#define COL_INK      0x14161A
-#define COL_BODY     0x3A3E45
-#define COL_SUB      0x8A8F98
-#define COL_ACCENT   0x0A6CFF
-#define COL_ALLOW    0x1E8E3E
-#define COL_DENY     0xC5221F
-#define COL_VEIL     0x0B0D12
+LV_FONT_DECLARE(app_font_16);
 
-LV_FONT_DECLARE(lv_font_source_han_sans_sc_16_cjk);
+// ---- 双主题调色板 ----
+typedef struct {
+    uint32_t ground, panel, hair, ink, body, sub, sel_bg, accent, allow, deny, veil;
+} palette_t;
+static const palette_t PAL_LIGHT = {
+    .ground = 0xF4F5F7, .panel = 0xFFFFFF, .hair = 0xE2E3E6,
+    .ink = 0x14161A, .body = 0x3A3E45, .sub = 0x8A8F98,
+    .sel_bg = 0xEAF2FF, .accent = 0x0A6CFF, .allow = 0x1E8E3E,
+    .deny = 0xC5221F, .veil = 0x0B0D12 };
+static const palette_t PAL_DARK = {
+    .ground = 0x000000, .panel = 0x16181D, .hair = 0x2A2E35,
+    .ink = 0xF2F3F5, .body = 0xC9CDD3, .sub = 0x7C828B,
+    .sel_bg = 0x14263D, .accent = 0x4C9DFF, .allow = 0x34A853,
+    .deny = 0xEA4335, .veil = 0x000000 };
+static const palette_t *P = &PAL_LIGHT;
+static bool s_dark;
 
 // ---- 状态 ----
-typedef enum { PG_HOME, PG_MENU, PG_ACTIVITY, PG_AGENTS, PG_ABOUT } page_t;
+typedef enum { PG_HOME, PG_MENU, PG_ACTIVITY, PG_USAGE, PG_SETTINGS, PG_ABOUT } page_t;
 typedef enum { OV_NONE, OV_REQ_P1, OV_REQ_P2, OV_NOTIFY, OV_FLASH } overlay_t;
 
 static QueueHandle_t s_decision_q;
 static QueueHandle_t s_msg_q;
 static QueueHandle_t s_key_q;
-
 typedef struct { bsp_btn_t btn; bsp_btn_ev_t ev; } key_evt_t;
 
-// 活动环形缓冲（notify 入栈）
+// 活动环形缓冲
 #define ACTIVITY_MAX 10
 typedef struct { char agent[16]; char model[40]; char at[24]; } activity_t;
 static activity_t s_activity[ACTIVITY_MAX];
 static int s_activity_count;
 
-// 时钟
+// 用量快照
+static char s_usage_tokens[24];
+static struct { char name[24]; char left[24]; } s_quotas[UI_QUOTA_MAX];
+static int s_quota_n;
+static bool s_usage_valid;
+
+// 时钟 / 信号
 static int s_hour = -1, s_min, s_wday, s_month, s_day;
+static int s_rssi = -100;
 
 // 覆盖层当前请求
-static char s_req_id[24];
-static char s_req_agent[16];
-static char s_req_title[64];
-static char s_req_detail[160];
+static char s_req_id[24], s_req_agent[16], s_req_title[64], s_req_detail[160];
 static int64_t s_notify_until_us;
 
-// ---- 对象引用 ----
+// ---- 对象 ----
 static lv_obj_t *scr;
-// 状态栏
-static lv_obj_t *dot_link, *lbl_batt;
-// HOME
-static lv_obj_t *lbl_clock, *lbl_date, *lbl_home_hint;
-// MENU / 页面共用容器
-static lv_obj_t *page_cont;          // 当前子页容器
+static lv_obj_t *lbl_time, *lbl_batt, *sig_bars[3];
+static lv_obj_t *page_cont, *footer_label;
 static page_t s_page = PG_HOME;
 static int s_menu_sel;
+// 首页
+static lv_obj_t *lbl_date, *lbl_usage;
 // 覆盖层
-static lv_obj_t *veil, *ov_panel;    // 蒙层 + 面板
-static lv_obj_t *ov_tag, *ov_title, *ov_detail, *ov_hint, *ov_page_dots;
+static lv_obj_t *veil, *ov_panel, *ov_tag, *ov_title, *ov_detail, *ov_page_dots;
 static overlay_t s_overlay = OV_NONE;
 // 闪烁
-static int s_flash_state;            // 0..5 计数，奇偶切换颜色
+static int s_flash_state;
 static bool s_flash_allow;
 static int64_t s_flash_next_us;
 
 static const char *const WDAY_CN[7] =
     { "周日", "周一", "周二", "周三", "周四", "周五", "周六" };
 
+static void show_home(void);
+static void show_menu(void);
+static void approval_ui_build_all(void);
+
 // ======================================================================
-// 小工具
+// 基础
 // ======================================================================
 static void style_reset(lv_obj_t *o) {
     lv_obj_set_style_bg_opa(o, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(o, 0, 0);
     lv_obj_set_style_pad_all(o, 0, 0);
     lv_obj_set_style_radius(o, 0, 0);
+    lv_obj_set_style_shadow_width(o, 0, 0);
 }
 
 static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font,
@@ -104,91 +117,204 @@ static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font,
     return l;
 }
 
-// ======================================================================
-// HOME 页
-// ======================================================================
-static void build_home(void) {
-    scr = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(scr, lv_color_hex(COL_GROUND), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+static lv_obj_t *make_card(lv_obj_t *parent, int w, int h) {
+    lv_obj_t *card = lv_obj_create(parent);
+    style_reset(card);
+    lv_obj_set_size(card, w, h);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(P->panel), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(P->hair), 0);
+    return card;
+}
 
-    // 状态栏：左连接点 + 右电量（电量右上为仓库规范默认位）
-    dot_link = lv_obj_create(scr);
-    style_reset(dot_link);
-    lv_obj_set_size(dot_link, 8, 8);
-    lv_obj_set_style_radius(dot_link, 4, 0);
-    lv_obj_set_style_bg_opa(dot_link, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(dot_link, lv_color_hex(COL_SUB), 0);
-    lv_obj_set_pos(dot_link, 24, 18);
-
-    lbl_batt = make_label(scr, &lv_font_source_han_sans_sc_16_cjk, COL_SUB,
-                          150, 10, 70);
-    lv_obj_set_style_text_align(lbl_batt, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_label_set_text(lbl_batt, "--%");
-
-    // 中央大时钟（等宽数字观感：Montserrat 48 + 手动两位补零）
-    lbl_clock = lv_label_create(scr);
-    lv_obj_set_style_text_font(lbl_clock, &lv_font_montserrat_48, 0);
-    lv_obj_set_style_text_color(lbl_clock, lv_color_hex(COL_INK), 0);
-    lv_obj_set_style_text_align(lbl_clock, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(lbl_clock, 240);
-    lv_label_set_text(lbl_clock, "--:--");
-    lv_obj_set_pos(lbl_clock, 0, 108);
-
-    // 日期（中文 16px）
-    lbl_date = make_label(scr, &lv_font_source_han_sans_sc_16_cjk, COL_SUB,
-                          0, 172, 240);
-    lv_obj_set_style_text_align(lbl_date, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(lbl_date, "时间同步中");
-
-    // 底部最近活动/等待提示
-    lbl_home_hint = make_label(scr, &lv_font_source_han_sans_sc_16_cjk, COL_SUB,
-                               24, 250, 192);
-    lv_label_set_text(lbl_home_hint, "OK 进入菜单");
+// 底部提示条
+static lv_obj_t *make_footer_label(lv_obj_t *parent) {
+    lv_obj_t *l = lv_label_create(parent);
+    lv_obj_set_style_text_font(l, &app_font_16, 0);
+    lv_obj_set_style_text_color(l, lv_color_hex(P->sub), 0);
+    lv_obj_set_width(l, 216);
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(l, 12, 292);
+    return l;
 }
 
 // ======================================================================
-// 菜单与子页（统一面板 + 发丝线）
+// 喜鹊精灵（像素画 ×2；# 墨 W 白 A 蓝 . 透明）
 // ======================================================================
-static const char *const MENU_ITEMS[] = { "Magpie 活动", "Agent 统计", "关于" };
-#define MENU_COUNT 3
+static const char *const MAGPIE[] = {
+    "......####..........",
+    ".....######.........",
+    "..A.##W####.........",
+    "...######...........",
+    "....########........",
+    "...##########..##...",
+    "..W#########..###...",
+    "..W########..###....",
+    "...######..###......",
+    "....W###..##........",
+    ".....BB#..#.........",
+    "....BBBB#...........",
+    ".....BB.............",
+    "......#.............",
+    "...#...#............",
+};
+#define MAGPIE_W 20
+#define MAGPIE_H (int)(sizeof(MAGPIE) / sizeof(MAGPIE[0]))
+#define MP_SCALE 2
+static uint16_t magpie_buf[MAGPIE_W * MP_SCALE * MAGPIE_H * MP_SCALE];
 
-static lv_obj_t *menu_list;
+static void magpie_build(lv_obj_t *parent) {
+    lv_obj_t *canvas = lv_canvas_create(parent);
+    const int w = MAGPIE_W * MP_SCALE, h = MAGPIE_H * MP_SCALE;
+    lv_canvas_set_buffer(canvas, magpie_buf, w, h, LV_COLOR_FORMAT_RGB565);
+    lv_canvas_fill_bg(canvas, lv_color_hex(P->ground), LV_OPA_COVER);
+    for (int ry = 0; ry < MAGPIE_H; ry++) {
+        for (int rx = 0; rx < MAGPIE_W; rx++) {
+            char c = MAGPIE[ry][rx];
+            uint32_t col;
+            if (c == '#') col = P->ink;
+            else if (c == 'W' || c == 'B') col = 0xFFFFFF;
+            else if (c == 'A') col = P->accent;
+            else continue;
+            for (int dy = 0; dy < MP_SCALE; dy++)
+                for (int dx = 0; dx < MP_SCALE; dx++)
+                    lv_canvas_set_px(canvas, rx * MP_SCALE + dx,
+                                     ry * MP_SCALE + dy, lv_color_hex(col),
+                                     LV_OPA_COVER);
+        }
+    }
+    lv_obj_set_pos(canvas, (240 - w) / 2, 56);
+}
 
+// ======================================================================
+// 状态栏（全局）：时间左 / 信号+电量右
+// ======================================================================
+static void build_status_bar(void) {
+    lbl_time = lv_label_create(scr);
+    lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(lbl_time, lv_color_hex(P->ink), 0);
+    lv_label_set_text(lbl_time, "--:--");
+    lv_obj_set_pos(lbl_time, 20, 8);
+
+    for (int i = 0; i < 3; i++) {
+        sig_bars[i] = lv_obj_create(scr);
+        style_reset(sig_bars[i]);
+        lv_obj_set_size(sig_bars[i], 4, 5 + i * 3);
+        lv_obj_set_style_bg_opa(sig_bars[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(sig_bars[i], lv_color_hex(P->hair), 0);
+        lv_obj_set_pos(sig_bars[i], 146 + i * 6, 26 - (5 + i * 3));
+    }
+
+    lbl_batt = make_label(scr, &lv_font_montserrat_14, P->sub, 176, 10, 46);
+    lv_obj_set_style_text_align(lbl_batt, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(lbl_batt, "--%");
+
+    lv_obj_t *line = lv_obj_create(scr);
+    style_reset(line);
+    lv_obj_set_size(line, 240, 1);
+    lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(line, lv_color_hex(P->hair), 0);
+    lv_obj_set_pos(line, 0, 34);
+}
+
+static void refresh_signal(void) {
+    int bars;
+    if (s_rssi == -100) bars = 0;
+    else if (s_rssi >= -55) bars = 3;
+    else if (s_rssi >= -67) bars = 2;
+    else if (s_rssi >= -78) bars = 1;
+    else bars = 0;
+    for (int i = 0; i < 3; i++) {
+        lv_obj_set_style_bg_color(sig_bars[i],
+            lv_color_hex(i < bars ? P->ink : P->hair), 0);
+    }
+}
+
+static void refresh_battery(void) {
+    int soc = bsp_battery_soc();
+    if (soc < 0) {
+        lv_label_set_text(lbl_batt, "--%");
+        lv_obj_set_style_text_color(lbl_batt, lv_color_hex(P->sub), 0);
+    } else {
+        lv_label_set_text_fmt(lbl_batt, "%d%%", soc);
+        lv_obj_set_style_text_color(lbl_batt,
+            lv_color_hex(soc <= 20 ? P->deny : P->body), 0);
+    }
+}
+
+static void refresh_time(void) {
+    if (s_hour < 0) return;
+    lv_label_set_text_fmt(lbl_time, "%02d:%02d", s_hour, s_min);
+}
+
+// ======================================================================
+// 页面容器（灰底透明）与底部提示
+// ======================================================================
 static void open_page_container(void) {
     if (page_cont) lv_obj_delete(page_cont);
     page_cont = lv_obj_create(scr);
     style_reset(page_cont);
-    lv_obj_set_size(page_cont, 208, 248);
-    lv_obj_set_pos(page_cont, 16, 36);
-    lv_obj_set_style_bg_color(page_cont, lv_color_hex(COL_PANEL), 0);
-    lv_obj_set_style_bg_opa(page_cont, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(page_cont, 14, 0);
-    lv_obj_set_style_border_width(page_cont, 0, 0);
+    lv_obj_set_size(page_cont, 208, 240);
+    lv_obj_set_pos(page_cont, 16, 42);
     lv_obj_clear_flag(page_cont, LV_OBJ_FLAG_SCROLLABLE);
 }
+
+static void ui_footer(const char *text) {
+    if (footer_label) lv_label_set_text(footer_label, text);
+}
+
+// ======================================================================
+// 首页
+// ======================================================================
+static void show_home(void) {
+    s_page = PG_HOME;
+    open_page_container();
+    magpie_build(page_cont);
+    lbl_date = make_label(page_cont, &app_font_16,
+                          P->sub, 0, 112, 208);
+    lv_obj_set_style_text_align(lbl_date, LV_TEXT_ALIGN_CENTER, 0);
+    if (s_hour >= 0) {
+        lv_label_set_text_fmt(lbl_date, "%s  %d月%d日", WDAY_CN[s_wday % 7],
+                              s_month, s_day);
+    } else {
+        lv_label_set_text(lbl_date, "时间同步中");
+    }
+    lbl_usage = make_label(page_cont, &lv_font_montserrat_14, P->sub,
+                           0, 140, 208);
+    lv_obj_set_style_text_align(lbl_usage, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(lbl_usage, s_usage_valid ? s_usage_tokens : "");
+    ui_footer("OK 菜单");
+}
+
+// ======================================================================
+// 菜单（灰底 + 白卡片）
+// ======================================================================
+static const char *const MENU_ITEMS[] =
+    { "Magpie 活动", "用量与额度", "设置", "关于" };
+#define MENU_COUNT 4
+static lv_obj_t *menu_list;
 
 static void menu_refresh(void) {
     lv_obj_clean(menu_list);
     for (int i = 0; i < MENU_COUNT; i++) {
-        lv_obj_t *row = lv_obj_create(menu_list);
-        style_reset(row);
-        lv_obj_set_size(row, 208, 62);
-        lv_obj_set_style_radius(row, 10, 0);
-        lv_obj_set_style_pad_hor(row, 8, 0);
+        lv_obj_t *row = make_card(menu_list, 208, 52);
+        lv_obj_set_style_pad_hor(row, 12, 0);
         if (i == s_menu_sel) {
-            lv_obj_set_style_bg_color(row, lv_color_hex(0xEAF2FF), 0);
-            lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(row, lv_color_hex(P->sel_bg), 0);
+            lv_obj_set_style_border_color(row, lv_color_hex(P->accent), 0);
         }
         lv_obj_t *dot = lv_obj_create(row);
         style_reset(dot);
         lv_obj_set_size(dot, 6, 6);
         lv_obj_set_style_radius(dot, 3, 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(dot, lv_color_hex(i == s_menu_sel ? COL_ACCENT : COL_HAIR), 0);
-        lv_obj_set_pos(dot, 14, 28);
-        lv_obj_t *t = make_label(row, &lv_font_source_han_sans_sc_16_cjk,
-                                 i == s_menu_sel ? COL_INK : COL_BODY, 30, 23, 160);
+        lv_obj_set_style_bg_color(dot,
+            lv_color_hex(i == s_menu_sel ? P->accent : P->hair), 0);
+        lv_obj_set_pos(dot, 2, 23);
+        lv_obj_t *t = make_label(row, &app_font_16,
+                                 i == s_menu_sel ? P->ink : P->body, 16, 16, 160);
         lv_label_set_text(t, MENU_ITEMS[i]);
     }
 }
@@ -196,134 +322,154 @@ static void menu_refresh(void) {
 static void show_menu(void) {
     s_page = PG_MENU;
     open_page_container();
-    lv_obj_t *cap = make_label(page_cont, &lv_font_source_han_sans_sc_16_cjk,
-                               COL_SUB, 16, 10, 180);
-    lv_label_set_text(cap, "菜单");
     menu_list = lv_obj_create(page_cont);
     style_reset(menu_list);
-    lv_obj_set_size(menu_list, 208, 200);
-    lv_obj_set_pos(menu_list, 0, 40);
+    lv_obj_set_size(menu_list, 208, 244);
+    lv_obj_set_pos(menu_list, 0, 0);
     lv_obj_clear_flag(menu_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(menu_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(menu_list, 6, 0);
+    lv_obj_set_style_pad_row(menu_list, 8, 0);
     menu_refresh();
-}
-
-static void show_activity_page(void) {
-    s_page = PG_ACTIVITY;
-    open_page_container();
-    lv_obj_t *cap = make_label(page_cont, &lv_font_source_han_sans_sc_16_cjk,
-                               COL_SUB, 16, 10, 180);
-    lv_label_set_text(cap, "Magpie 最近活动");
-    lv_obj_t *list = lv_obj_create(page_cont);
-    style_reset(list);
-    lv_obj_set_size(list, 208, 226);
-    lv_obj_set_pos(list, 0, 22);
-    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
-    int n = s_activity_count < ACTIVITY_MAX ? s_activity_count : ACTIVITY_MAX;
-    if (n == 0) {
-        lv_obj_t *e = make_label(list, &lv_font_source_han_sans_sc_16_cjk,
-                                 COL_SUB, 12, 8, 180);
-        lv_label_set_text(e, "暂无活动（等待 Agent 流量）");
-    }
-    for (int i = 0; i < n; i++) {
-        lv_obj_t *row = lv_obj_create(list);
-        style_reset(row);
-        lv_obj_set_size(row, 184, LV_SIZE_CONTENT);
-        lv_obj_set_style_pad_bottom(row, 10, 0);
-        if (i > 0) {
-            lv_obj_t *line = lv_obj_create(row);
-            style_reset(line);
-            lv_obj_set_size(line, 184, 1);
-            lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
-            lv_obj_set_style_bg_color(line, lv_color_hex(COL_HAIR), 0);
-            lv_obj_set_pos(line, 0, 0);
-        }
-        // 发丝线
-        char head[64];
-        snprintf(head, sizeof(head), "%s  %s", s_activity[i].at,
-                 s_activity[i].agent);
-        lv_obj_t *h = make_label(row, &lv_font_source_han_sans_sc_16_cjk,
-                                 COL_BODY, 0, 10, 184);
-        lv_label_set_text(h, head);
-        lv_obj_t *m = make_label(row, &lv_font_montserrat_14, COL_SUB, 0, 32, 184);
-        lv_label_set_text(m, s_activity[i].model);
-    }
-}
-
-static void show_agents_page(void) {
-    s_page = PG_AGENTS;
-    open_page_container();
-    lv_obj_t *cap = make_label(page_cont, &lv_font_source_han_sans_sc_16_cjk,
-                               COL_SUB, 16, 10, 180);
-    lv_label_set_text(cap, "Agent 活动统计");
-    // 计数
-    struct { char name[16]; int count; } stats[6];
-    int nstats = 0;
-    for (int i = 0; i < s_activity_count && i < ACTIVITY_MAX; i++) {
-        int f = -1;
-        for (int k = 0; k < nstats; k++) {
-            if (strcmp(stats[k].name, s_activity[i].agent) == 0) { f = k; break; }
-        }
-        if (f < 0 && nstats < 6) {
-            strlcpy(stats[nstats].name, s_activity[i].agent, 16);
-            stats[nstats].count = 1;
-            nstats++;
-        } else if (f >= 0) stats[f].count++;
-    }
-    if (nstats == 0) {
-        lv_obj_t *e = make_label(page_cont, &lv_font_source_han_sans_sc_16_cjk,
-                                 COL_SUB, 16, 40, 180);
-        lv_label_set_text(e, "暂无统计数据");
-        return;
-    }
-    int y = 40;
-    for (int k = 0; k < nstats; k++) {
-        char line[48];
-        snprintf(line, sizeof(line), "%s   %d 次", stats[k].name, stats[k].count);
-        lv_obj_t *l = make_label(page_cont, &lv_font_source_han_sans_sc_16_cjk,
-                                 COL_BODY, 16, y, 180);
-        lv_label_set_text(l, line);
-        y += 34;
-    }
-}
-
-static void show_about_page(void) {
-    s_page = PG_ABOUT;
-    open_page_container();
-    lv_obj_t *cap = make_label(page_cont, &lv_font_source_han_sans_sc_16_cjk,
-                               COL_SUB, 16, 10, 180);
-    lv_label_set_text(cap, "关于");
-    const char *rows[] = {
-        "Approval Remote v0.2",
-        "固件: feature/approval-remote",
-        "桥: 见 Mac approval-bridge",
-        "电源键=硬件开关",
-        NULL,
-    };
-    int y = 40;
-    for (int i = 0; rows[i]; i++) {
-        lv_obj_t *l = make_label(page_cont, &lv_font_source_han_sans_sc_16_cjk,
-                                 COL_BODY, 16, y, 184);
-        lv_label_set_text(l, rows[i]);
-        y += 30;
-    }
-}
-
-static void page_back_home(void) {
-    s_page = PG_HOME;
-    if (page_cont) { lv_obj_delete(page_cont); page_cont = NULL; }
-    menu_list = NULL;
+    ui_footer("上下 选择 · OK 打开");
 }
 
 // ======================================================================
-// 覆盖层（玻璃转译：深色蒙层 + 浅色面板）
+// Magpie 活动页
+// ======================================================================
+static void show_activity_page(void) {
+    s_page = PG_ACTIVITY;
+    open_page_container();
+    int n = s_activity_count < ACTIVITY_MAX ? s_activity_count : ACTIVITY_MAX;
+    lv_obj_t *list = lv_obj_create(page_cont);
+    style_reset(list);
+    lv_obj_set_size(list, 208, 244);
+    lv_obj_set_pos(list, 0, 0);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, 6, 0);
+    if (n == 0) {
+        lv_obj_t *e = make_label(list, &app_font_16,
+                                 P->sub, 4, 8, 196);
+        lv_label_set_text(e, "暂无活动（等待 Agent 流量）");
+    }
+    for (int i = 0; i < n; i++) {
+        lv_obj_t *card = make_card(list, 208, 56);
+        lv_obj_set_style_pad_hor(card, 12, 0);
+        char head[64];
+        snprintf(head, sizeof(head), "%s  %s", s_activity[i].at,
+                 s_activity[i].agent);
+        lv_obj_t *h = make_label(card, &app_font_16,
+                                 P->body, 0, 8, 184);
+        lv_label_set_text(h, head);
+        lv_obj_t *mo = make_label(card, &lv_font_montserrat_14, P->sub, 0, 32, 184);
+        lv_label_set_text(mo, s_activity[i].model);
+    }
+    ui_footer("OK 返回");
+}
+
+// ======================================================================
+// 用量与额度页
+// ======================================================================
+static void show_usage_page(void) {
+    s_page = PG_USAGE;
+    open_page_container();
+    lv_obj_t *list = lv_obj_create(page_cont);
+    style_reset(list);
+    lv_obj_set_size(list, 208, 244);
+    lv_obj_set_pos(list, 0, 0);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, 8, 0);
+    if (!s_usage_valid) {
+        lv_obj_t *e = make_label(list, &app_font_16,
+                                 P->sub, 4, 8, 196);
+        lv_label_set_text(e, "暂无用量数据\n（Magpie 有流量后自动更新）");
+    } else {
+        lv_obj_t *card = make_card(list, 208, 62);
+        lv_obj_set_style_pad_hor(card, 12, 0);
+        lv_obj_t *t1 = make_label(card, &app_font_16,
+                                  P->sub, 0, 8, 184);
+        lv_label_set_text(t1, "7 日 tokens");
+        lv_obj_t *t2 = make_label(card, &lv_font_montserrat_20, P->ink, 0, 28, 184);
+        lv_label_set_text(t2, s_usage_tokens);
+        for (int i = 0; i < s_quota_n; i++) {
+            lv_obj_t *qc = make_card(list, 208, 48);
+            lv_obj_set_style_pad_hor(qc, 12, 0);
+            lv_obj_t *qn = make_label(qc, &app_font_16,
+                                      P->body, 0, 14, 130);
+            lv_label_set_text(qn, s_quotas[i].name);
+            lv_obj_t *qv = make_label(qc, &app_font_16,
+                                      P->allow, 130, 14, 66);
+            lv_obj_set_style_text_align(qv, LV_TEXT_ALIGN_RIGHT, 0);
+            lv_label_set_text(qv, s_quotas[i].left);
+        }
+    }
+    ui_footer("OK 返回");
+}
+
+// ======================================================================
+// 设置页（深色模式，NVS 持久化）
+// ======================================================================
+static void settings_toggle_dark(void);
+
+static void show_settings_page(void) {
+    s_page = PG_SETTINGS;
+    open_page_container();
+    lv_obj_t *card = make_card(page_cont, 208, 52);
+    lv_obj_set_style_pad_hor(card, 12, 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(P->accent), 0);
+    lv_obj_t *t = make_label(card, &app_font_16,
+                             P->ink, 0, 16, 120);
+    lv_label_set_text(t, "深色模式");
+    lv_obj_t *v = make_label(card, &app_font_16,
+                             s_dark ? P->accent : P->sub, 130, 16, 66);
+    lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(v, s_dark ? "开" : "关");
+    ui_footer("OK 切换 · 长按返回");
+}
+
+static void settings_toggle_dark(void) {
+    s_dark = !s_dark;
+    nvs_handle_t h;
+    if (nvs_open("appr", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "dark", s_dark ? 1 : 0);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    P = s_dark ? &PAL_DARK : &PAL_LIGHT;
+    bsp_display_backlight(s_dark ? 45 : 70);
+    approval_ui_build_all();
+    show_settings_page();
+}
+
+// ======================================================================
+// 关于页
+// ======================================================================
+static void show_about_page(void) {
+    s_page = PG_ABOUT;
+    open_page_container();
+    const char *rows[] = {
+        "Approval Remote v0.3",
+        "桥: Mac approval-bridge",
+        "电源键=硬件开关",
+        NULL,
+    };
+    int y = 12;
+    for (int i = 0; rows[i]; i++) {
+        lv_obj_t *l = make_label(page_cont, &app_font_16,
+                                 P->body, 0, y, 200);
+        lv_label_set_text(l, rows[i]);
+        y += 34;
+    }
+    ui_footer("OK 返回");
+}
+
+// ======================================================================
+// 覆盖层（蒙层 + 浅面板；提示走底部条）
 // ======================================================================
 static void build_overlay(void) {
     veil = lv_obj_create(scr);
     lv_obj_set_pos(veil, 0, 0);
     lv_obj_set_size(veil, 240, 320);
-    lv_obj_set_style_bg_color(veil, lv_color_hex(COL_VEIL), 0);
+    lv_obj_set_style_bg_color(veil, lv_color_hex(P->veil), 0);
     lv_obj_set_style_bg_opa(veil, LV_OPA_70, 0);
     lv_obj_set_style_border_width(veil, 0, 0);
     lv_obj_set_style_radius(veil, 0, 0);
@@ -331,26 +477,22 @@ static void build_overlay(void) {
 
     ov_panel = lv_obj_create(veil);
     style_reset(ov_panel);
-    lv_obj_set_size(ov_panel, 208, 208);
-    lv_obj_set_pos(ov_panel, 16, 56);
-    lv_obj_set_style_bg_color(ov_panel, lv_color_hex(COL_PANEL), 0);
+    lv_obj_set_size(ov_panel, 208, 196);
+    lv_obj_set_pos(ov_panel, 16, 52);
+    lv_obj_set_style_bg_color(ov_panel, lv_color_hex(P->panel), 0);
     lv_obj_set_style_bg_opa(ov_panel, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(ov_panel, 16, 0);
     lv_obj_set_style_border_width(ov_panel, 2, 0);
-    lv_obj_set_style_border_color(ov_panel, lv_color_hex(COL_HAIR), 0);
-    lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_border_color(ov_panel, lv_color_hex(P->hair), 0);
 
-    ov_tag = make_label(ov_panel, &lv_font_montserrat_14, COL_ACCENT, 14, 12, 180);
-    ov_title = make_label(ov_panel, &lv_font_source_han_sans_sc_16_cjk, COL_INK,
+    ov_tag = make_label(ov_panel, &lv_font_montserrat_14, P->accent, 14, 12, 180);
+    ov_title = make_label(ov_panel, &app_font_16, P->ink,
                           16, 34, 176);
-    ov_detail = make_label(ov_panel, &lv_font_montserrat_14, COL_BODY,
+    ov_detail = make_label(ov_panel, &lv_font_montserrat_14, P->body,
                            16, 62, 176);
-    lv_label_set_long_mode(ov_detail, LV_LABEL_LONG_WRAP);
-    ov_page_dots = make_label(ov_panel, &lv_font_source_han_sans_sc_16_cjk,
-                              COL_SUB, 16, 156, 176);
+    ov_page_dots = make_label(ov_panel, &app_font_16,
+                              P->sub, 16, 156, 176);
     lv_label_set_text(ov_page_dots, "1/2");
-    ov_hint = make_label(ov_panel, &lv_font_source_han_sans_sc_16_cjk, COL_BODY,
-                         16, 184, 176);
 }
 
 static void overlay_show(bool show) {
@@ -365,51 +507,49 @@ static void overlay_show(bool show) {
 static void show_request_p1(void) {
     s_overlay = OV_REQ_P1;
     lv_label_set_text_fmt(ov_tag, "%s", s_req_agent);
-    lv_label_set_text_fmt(ov_title, "请求确认");
-    // 摘要：命令首行（60 字符内）
-    char brief[64];
-    strlcpy(brief, s_req_title, sizeof(brief));
-    lv_label_set_text_fmt(ov_detail, "%.60s", brief);
-    lv_obj_set_style_text_color(ov_detail, lv_color_hex(COL_BODY), 0);
+    lv_label_set_text(ov_title, "请求确认");
+    lv_label_set_text_fmt(ov_detail, "%.60s", s_req_title);
+    lv_obj_set_style_text_color(ov_detail, lv_color_hex(P->body), 0);
     lv_label_set_text(ov_page_dots, "1/2");
-    lv_label_set_text(ov_hint, "OK 详情  DOWN 拒绝");
     overlay_show(true);
+    ui_footer("OK 详情 · DOWN 拒绝");
 }
 
 static void show_request_p2(void) {
     s_overlay = OV_REQ_P2;
     lv_label_set_text_fmt(ov_tag, "%s", s_req_agent);
-    lv_label_set_text_fmt(ov_title, "完整命令");
-    lv_label_set_text_fmt(ov_detail, "%.150s", s_req_detail[0] ? s_req_detail
-                                                               : s_req_title);
+    lv_label_set_text(ov_title, "完整命令");
+    lv_label_set_text_fmt(ov_detail, "%.150s",
+                          s_req_detail[0] ? s_req_detail : s_req_title);
     lv_label_set_text(ov_page_dots, "2/2");
-    lv_label_set_text(ov_hint, "OK 允许  DOWN 拒绝");
     overlay_show(true);
+    ui_footer("OK 允许 · UP 返回 · DOWN 拒绝");
 }
 
 static void show_notify_overlay(const ui_msg_t *m) {
     s_overlay = OV_NOTIFY;
     lv_label_set_text_fmt(ov_tag, "%s", m->agent);
-    lv_label_set_text_fmt(ov_title, "活动");
+    lv_label_set_text(ov_title, "活动");
     lv_label_set_text_fmt(ov_detail, "%.60s", m->title);
+    lv_obj_set_style_text_color(ov_detail, lv_color_hex(P->sub), 0);
     lv_label_set_text(ov_page_dots, "");
-    lv_obj_set_style_text_color(ov_detail, lv_color_hex(COL_SUB), 0);
-    lv_label_set_text(ov_hint, "任意键 关闭");
     overlay_show(true);
+    ui_footer("任意键 关闭");
     s_notify_until_us = esp_timer_get_time() + (int64_t)m->timeout_s * 1000000;
 }
 
-// 决定后的确认闪烁（边框+底色，3 次 150ms）
 static void start_flash(bool allow) {
     s_overlay = OV_FLASH;
     s_flash_allow = allow;
-    s_flash_state = 6;               // 3 次亮暗
+    s_flash_state = 6;
     s_flash_next_us = esp_timer_get_time() + 150 * 1000;
-    lv_obj_set_style_bg_color(veil, lv_color_hex(allow ? COL_ALLOW : COL_DENY), 0);
+    lv_obj_set_style_bg_color(veil, lv_color_hex(allow ? P->allow : P->deny), 0);
     lv_obj_set_style_bg_opa(veil, LV_OPA_40, 0);
-    lv_label_set_text(ov_hint, allow ? "已允许" : "已拒绝");
-    lv_obj_set_style_text_color(ov_hint,
-        lv_color_hex(allow ? COL_ALLOW : COL_DENY), 0);
+    lv_label_set_text(ov_page_dots, "");
+    lv_label_set_text(ov_detail, allow ? "已允许" : "已拒绝");
+    lv_obj_set_style_text_color(ov_detail,
+        lv_color_hex(allow ? P->allow : P->deny), 0);
+    ui_footer(allow ? "已允许" : "已拒绝");
 }
 
 static void pump_flash(void) {
@@ -417,22 +557,18 @@ static void pump_flash(void) {
     if (esp_timer_get_time() < s_flash_next_us) return;
     s_flash_next_us = esp_timer_get_time() + 150 * 1000;
     s_flash_state--;
-    if (s_flash_state % 2 == 0) {
-        lv_obj_set_style_bg_opa(veil, LV_OPA_40, 0);   // 亮
-    } else {
-        lv_obj_set_style_bg_opa(veil, LV_OPA_70, 0);   // 暗
-    }
     if (!s_flash_state) {
-        lv_obj_set_style_bg_color(veil, lv_color_hex(COL_VEIL), 0);
+        lv_obj_set_style_bg_color(veil, lv_color_hex(P->veil), 0);
         lv_obj_set_style_bg_opa(veil, LV_OPA_70, 0);
-        lv_obj_set_style_text_color(ov_hint, lv_color_hex(COL_BODY), 0);
         overlay_show(false);
-        lv_screen_load(scr);
+        if (s_page == PG_HOME) ui_footer("OK 菜单");
+        else if (s_page == PG_MENU) ui_footer("上下 选择 · OK 打开");
+        else ui_footer("OK 返回");
     }
 }
 
 // ======================================================================
-// 决定出口
+// 决定 / 活动缓冲 / 用量
 // ======================================================================
 static void emit_decision(bool allow) {
     ui_decision_t d = { .allow = allow };
@@ -441,15 +577,10 @@ static void emit_decision(bool allow) {
     start_flash(allow);
 }
 
-// ======================================================================
-// 活动环形缓冲
-// ======================================================================
 static void activity_push(const ui_msg_t *m) {
     activity_t *a = &s_activity[ACTIVITY_MAX - 1];
-    // 右移
     for (int i = ACTIVITY_MAX - 1; i > 0; i--) s_activity[i] = s_activity[i - 1];
     strlcpy(a->agent, m->agent, sizeof(a->agent));
-    // title 形如 "codex / DeepSeek-V4.1"，取模型段
     const char *sep = strstr(m->title, " / ");
     strlcpy(a->model, sep ? sep + 3 : m->title, sizeof(a->model));
     if (s_hour >= 0) {
@@ -460,13 +591,25 @@ static void activity_push(const ui_msg_t *m) {
     if (s_activity_count < ACTIVITY_MAX) s_activity_count++;
 }
 
+static void usage_apply(const ui_msg_t *m) {
+    strlcpy(s_usage_tokens, m->tokens, sizeof(s_usage_tokens));
+    s_quota_n = m->quota_n;
+    for (int i = 0; i < m->quota_n && i < UI_QUOTA_MAX; i++) {
+        strlcpy(s_quotas[i].name, m->quotas[i].name, sizeof(s_quotas[i].name));
+        strlcpy(s_quotas[i].left, m->quotas[i].left, sizeof(s_quotas[i].left));
+    }
+    s_usage_valid = true;
+    if (s_page == PG_HOME && lbl_usage) {
+        lv_label_set_text(lbl_usage, s_usage_tokens);
+    }
+}
+
 // ======================================================================
-// 按键处理（pump 上下文）
+// 按键
 // ======================================================================
 static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
     if (ev == BSP_BTN_RELEASE) return;
 
-    // 覆盖层优先
     if (s_overlay == OV_REQ_P1 && ev == BSP_BTN_CLICK) {
         if (btn == BSP_BTN_OK) show_request_p2();
         else if (btn == BSP_BTN_DOWN) emit_decision(false);
@@ -480,14 +623,14 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
     }
     if (s_overlay == OV_NOTIFY && ev == BSP_BTN_CLICK) {
         overlay_show(false);
+        ui_footer("OK 菜单");
         return;
     }
-    if (s_overlay == OV_FLASH) return;   // 闪烁期间不响应
+    if (s_overlay == OV_FLASH) return;
 
-    // 页面栈
-    if (ev == BSP_BTN_LONG && btn == BSP_BTN_OK && s_page != PG_HOME) {
-        if (s_page == PG_MENU) page_back_home();
-        else show_menu();
+    if (ev == BSP_BTN_LONG && btn == BSP_BTN_OK) {
+        if (s_page == PG_MENU) show_home();
+        else if (s_page != PG_HOME) show_menu();
         return;
     }
     if (ev != BSP_BTN_CLICK) return;
@@ -495,22 +638,28 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
     if (s_page == PG_HOME) {
         if (btn == BSP_BTN_OK) show_menu();
     } else if (s_page == PG_MENU) {
-        if (btn == BSP_BTN_UP) { s_menu_sel = (s_menu_sel + MENU_COUNT - 1) % MENU_COUNT; menu_refresh(); }
-        else if (btn == BSP_BTN_DOWN) { s_menu_sel = (s_menu_sel + 1) % MENU_COUNT; menu_refresh(); }
-        else if (btn == BSP_BTN_OK) {
+        if (btn == BSP_BTN_UP) {
+            s_menu_sel = (s_menu_sel + MENU_COUNT - 1) % MENU_COUNT;
+            menu_refresh();
+        } else if (btn == BSP_BTN_DOWN) {
+            s_menu_sel = (s_menu_sel + 1) % MENU_COUNT;
+            menu_refresh();
+        } else if (btn == BSP_BTN_OK) {
             switch (s_menu_sel) {
                 case 0: show_activity_page(); break;
-                case 1: show_agents_page(); break;
-                case 2: show_about_page(); break;
+                case 1: show_usage_page(); break;
+                case 2: show_settings_page(); break;
+                case 3: show_about_page(); break;
             }
         }
-    } else if (s_page == PG_ACTIVITY) {
-        // 滚动由容器自带；这里留钩子
+    } else if (btn == BSP_BTN_OK) {
+        if (s_page == PG_SETTINGS) settings_toggle_dark();
+        else show_menu();
     }
 }
 
 // ======================================================================
-// 消息处理（pump 上下文）
+// 消息
 // ======================================================================
 static void handle_msg(const ui_msg_t *m) {
     switch (m->kind) {
@@ -525,56 +674,53 @@ static void handle_msg(const ui_msg_t *m) {
             activity_push(m);
             if (s_overlay == OV_NONE || s_overlay == OV_NOTIFY) {
                 show_notify_overlay(m);
-            } else {
-                // 审批/闪烁中：只入活动缓冲不弹层
             }
             break;
+        case UI_MSG_USAGE:
+            usage_apply(m);
+            break;
+        case UI_MSG_STATUS:
+            break;   // 连接态由信号格与通知体现
         case UI_MSG_CANCEL:
             if (s_overlay == OV_REQ_P1 || s_overlay == OV_REQ_P2
                 || s_overlay == OV_NOTIFY) {
                 overlay_show(false);
+                ui_footer("OK 菜单");
             }
             break;
-        case UI_MSG_STATUS:
-            // 连接状态点：灰 = 未连桥，绿 = 已连
-            lv_obj_set_style_bg_color(dot_link,
-                lv_color_hex(strstr(m->title, "up") ? COL_ALLOW : COL_SUB), 0);
-            break;
     }
 }
 
 // ======================================================================
-// 时钟与电量刷新
+// 全量构建与公共接口
 // ======================================================================
-static void refresh_clock(void) {
-    if (s_hour < 0) return;
-    lv_label_set_text_fmt(lbl_clock, "%02d:%02d", s_hour, s_min);
-    lv_label_set_text_fmt(lbl_date, "%s  %d月%d日", WDAY_CN[s_wday % 7],
-                          s_month, s_day);
+void approval_ui_build_all(void) {
+    scr = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(scr, lv_color_hex(P->ground), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    build_status_bar();
+    footer_label = make_footer_label(scr);
+    build_overlay();
+    lv_screen_load(scr);
+    refresh_time();
+    refresh_battery();
+    refresh_signal();
 }
 
-static void refresh_battery(void) {
-    int soc = bsp_battery_soc();
-    if (soc < 0) {
-        lv_label_set_text(lbl_batt, "--%");
-        lv_obj_set_style_text_color(lbl_batt, lv_color_hex(COL_SUB), 0);
-    } else {
-        lv_label_set_text_fmt(lbl_batt, "%d%%", soc);
-        lv_obj_set_style_text_color(lbl_batt,
-            lv_color_hex(soc <= 20 ? COL_DENY : COL_BODY), 0);
-    }
-}
-
-// ======================================================================
-// 公共接口
-// ======================================================================
 void approval_ui_init(QueueHandle_t decision_out) {
     s_decision_q = decision_out;
     s_msg_q = xQueueCreate(8, sizeof(ui_msg_t));
     s_key_q = xQueueCreate(8, sizeof(key_evt_t));
-    build_home();
-    build_overlay();
-    lv_screen_load(scr);
+    nvs_handle_t h;
+    if (nvs_open("appr", NVS_READONLY, &h) == ESP_OK) {
+        uint8_t d = 0;
+        if (nvs_get_u8(h, "dark", &d) == ESP_OK && d) s_dark = true;
+        nvs_close(h);
+    }
+    P = s_dark ? &PAL_DARK : &PAL_LIGHT;
+    bsp_display_backlight(s_dark ? 45 : 70);
+    approval_ui_build_all();
+    show_home();
 }
 
 void approval_ui_post(const ui_msg_t *msg) {
@@ -588,26 +734,38 @@ void approval_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
 
 void approval_ui_pump(void) {
     static int64_t last_sec = -1;
+    static int64_t last_refresh = 0;
     ui_msg_t m;
     while (s_msg_q && xQueueReceive(s_msg_q, &m, 0) == pdTRUE) handle_msg(&m);
     key_evt_t k;
     while (s_key_q && xQueueReceive(s_key_q, &k, 0) == pdTRUE) handle_key(k.btn, k.ev);
     pump_flash();
-    // 通知 TTL
     if (s_overlay == OV_NOTIFY && s_notify_until_us
         && esp_timer_get_time() >= s_notify_until_us) {
         overlay_show(false);
         s_notify_until_us = 0;
+        ui_footer("OK 菜单");
     }
-    // 每秒刷新时钟/电量
     int64_t now = esp_timer_get_time() / 1000000;
     if (now != last_sec) {
         last_sec = now;
-        refresh_clock();
+        refresh_time();
         refresh_battery();
+    }
+    if (now - last_refresh >= 3) {
+        last_refresh = now;
+        refresh_signal();
     }
 }
 
 void approval_ui_set_time(int hour, int minute, int wday, int month, int day) {
     s_hour = hour; s_min = minute; s_wday = wday; s_month = month; s_day = day;
+    if (s_page == PG_HOME && lbl_date) {
+        lv_label_set_text_fmt(lbl_date, "%s  %d月%d日",
+                              WDAY_CN[s_wday % 7], s_month, s_day);
+    }
+}
+
+void approval_ui_set_rssi(int rssi_dbm) {
+    s_rssi = rssi_dbm;
 }
