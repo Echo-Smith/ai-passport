@@ -148,22 +148,44 @@ export IDF_COMPONENT_STORAGE_URL=https://components-file.espressif.cn  # Managed
 
 ## 6. 归档研究（parked——方向已论证，待触发）
 
-### 6.1 AI 连接方案（2026-10-23 论证，用户暂缓）
+### 6.1 AI 连接方案（2026-10-23 论证；**2026-10-25 unpark 进入实现**，见 §6.3）
 
-**共识架构**：设备不可能直连 Agent（C3 无 ASR/LLM 能力），必经桥（ASR→Agent→TTS）。交互流：按键(PRESS) → 录音流式上行 → 桥 → Agent → 文本/音频回传 → 屏显+播放。
+**共识架构**：设备不可能直连 Agent（C3 无 ASR/LLM 能力），必经桥。原通用论证保留备查：
 
 | 方案 | 通道 | 定位 |
 | --- | --- | --- |
-| A. Wi-Fi + WebSocket（小智模式） | 设备↔局域网/云桥 | 最终产品形态；xiaozhi-esp32 在 C3 有完整先例；配网用 BluFi 参考分支 |
-| B. USB CDC 直连 | 设备↔宿主机 | MVP 首选；注意 console 与数据共用 CDC 需帧协议（UART0 被 GPIO21 背光占用不可另开） |
-| C. 手机 BLE 桥 | 设备↔手机 App↔网络 | 无网备选；工程量大头在手机端；BLE 需压缩音频（OPUS/ADPCM） |
-| D. 官方 plays 分发 | 扫码装固件 | 只解决分发不解决连接，作为 A 的发布配套 |
+| A. Wi-Fi + 局域网直连（实现变体：TCP+JSON 行，见 §6.3） | 设备↔局域网桥 | 最终产品形态 |
+| B. USB CDC 直连 | 设备↔宿主机 | 备选（console 与数据共用 CDC 需帧协议） |
+| C. 手机 BLE 桥 | 设备↔手机 App↔网络 | 无网备选；BLE 需压缩音频（OPUS/ADPCM） |
+| D. 官方 plays 分发 | 扫码装固件 | 只解决分发，作为发布配套 |
 
-**触发时从阶段 1 开始**：B 方案 MVP（固件录音流式+CDC 帧协议 ↔ Mac Python 桥）→ 阶段 2 无线化（A，BluFi 配网+OPUS+TTS）→ 阶段 3 可选（C 或 D）。官方扫码系统 = 设备身份+玩法分发（`ai-passport.folotoy.cn/plays/`），**不是**运行时数据通道。
+语音类交互流（未触发）：按键(PRESS) → 录音流式上行 → 桥 → Agent → 文本/音频回传 → 屏显+播放。官方扫码系统 = 设备身份+玩法分发（`ai-passport.folotoy.cn/plays/`），**不是**运行时数据通道。
 
 ### 6.2 NFC 结论
 
 固件侧永久不可用（无连线 + 芯片无主机接口 + C3 无 NFC 外设）。可用法仅两种：手机读/改写其 144 字节 NDEF（出厂锁位情况未实测，改前先备份原内容）；或硬件改造加 PN532 挂 I2C0（不推荐）。设计上视作"设备永久名片"。
+
+### 6.3 Approval Remote（远程审批器）——§6.1 的首个落地应用（2026-10-25 走通）
+
+**需求**：用户在多个 Agent 间审批权限请求疲于奔命；设备经网络接收推送，三键批准/拒绝。
+
+**事件源调研结论（关键）**：Magpie（usemagpie.ai，模型网关）**拿不到审批事件**——其插件钩子全在 LLM 流量层（onRequest/onResponse/onUsage），而 Agent 的权限确认不走模型 API。正确钩子是 Agent 原生审批接口：Claude Code `--permission-prompt-tool`（官方支持把权限确认交给 MCP 工具，社区已有接 Telegram/邮件的先例，阻塞等待、默认 9 分钟超时）。Magpie 保留为可选附加适配器（活动通知）。
+
+**已走通链路**（模拟器端到端验证 ✓）：
+```
+Claude Code (--permission-prompt-tool) → MCP stdio → 桥(approval-bridge/bridge.py)
+  → TCP 局域网(JSON 行协议, token 认证, 超时 fail-safe=deny)
+  → 固件 feature/approval-remote (approval_main.c)
+  → 审批屏: OK=allow / DOWN=deny → decision 回传
+```
+
+- 桥：`~/Codex/AI-Passport/approval-bridge/bridge.py`（hub/mcp/send 三模式；hub 自测+设备联调通过）
+- 固件：`feature/approval-remote` 分支，门控 PASS，app 1.22MB
+- 验证证据：hub 日志 `设备已连接 → 决定 → allow (device)`；send 返回 `结果: allow`
+
+**模拟器网络要点（复用必读）**：模拟器 Wi-Fi 是 ESP-EMU 虚拟 AP，SSID 固定 `Emulator Host Bridge`/空密码（`wifi_cred.h` 需匹配）；`EMULATOR_NETWORK_ALLOW_PRIVATE=1` 启动 server 才能访问局域网/宿主私有地址；UART 缓冲仅 52 行，启动日志会灌满，看运行期日志先点"清空"；BLE 区固件会崩溃（unsupported-features.js 检测 ROM 区），审批固件未启用 BT。
+
+**待办**：① 接真 Claude Code（hub 常驻 + `--permission-prompt-tool` 指向 mcp 模式，MCP 返回格式按实测调整 format_permission_result）② 真机部署（真 SSID/桥 IP 写入 wifi_cred.h + 分段烧录保 NVS）③ UI 打磨与 CJK 字体（当前中文详情显示方块，Montserrat 无 CJK）④ 桥地址自动发现（mDNS）替代硬编码 IP。
 
 ---
 
@@ -173,5 +195,6 @@ export IDF_COMPONENT_STORAGE_URL=https://components-file.espressif.cn  # Managed
 | --- | --- | --- |
 | 2026-10-23 | 圆角屏幕设计约束（只点亮圆角内区域，四角纯黑） | 已采纳，产品级约束 |
 | 2026-10-23 | macOS 门控修复提上游 PR #113 | 等待合并；本地分支已包含 |
-| 2026-10-23 | AI 连接功能四方案论证 | **parked**，待用户定方向后从 §6.1 阶段 1 启动 |
+| 2026-10-23 | AI 连接功能四方案论证 | 已 unpark：首个应用 Approval Remote 于 2026-10-25 走通（§6.3） |
 | 2026-10-23 | 本 harness 建立（feature/dev-harness 分支） | 生效 |
+| 2026-10-25 | Approval Remote 链路定稿：Agent 原生审批接口 + 桥 + TCP JSON 行；Magpie 不作事件源 | 已实现并模拟器端到端验证 |

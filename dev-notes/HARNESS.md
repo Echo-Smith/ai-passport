@@ -148,22 +148,35 @@ edit → ./tools/validate.sh --firmware (~90 s)
 
 ## 6. Parked research (argued out, awaiting a trigger)
 
-### 6.1 AI-connectivity options (argued 2026-10-23; on hold by the user)
+### 6.1 AI-connectivity options (argued 2026-10-23; **unparked 2026-10-25**, first app in §6.3)
 
-**Agreed architecture**: the device can never talk to an agent directly (no ASR/LLM on a C3); a bridge (ASR→Agent→TTS) is mandatory. Flow: key (PRESS) → streamed recording up → bridge → agent → text/audio back → screen + speaker.
-
-| Option | Channel | Position |
-| --- | --- | --- |
-| A. Wi-Fi + WebSocket (xiaozhi pattern) | device ↔ LAN/cloud bridge | final product shape; xiaozhi-esp32 is a complete C3 precedent; provisioning via the BluFi reference branch |
-| B. USB CDC direct | device ↔ host | MVP pick; console and data share the CDC port, so a frame protocol is required (UART0 is unusable — GPIO21 is the backlight) |
-| C. Phone BLE bridge | device ↔ phone app ↔ network | offline fallback; most work is the phone app; BLE needs compressed audio (OPUS/ADPCM) |
-| D. Official plays distribution | QR-install firmware | solves distribution only, not connectivity; ships with A |
-
-**When triggered, start at stage 1**: option-B MVP (firmware streaming recorder + CDC framing ↔ a Python bridge on the Mac) → stage 2 wireless (A: BluFi provisioning + OPUS + TTS) → stage 3 optional (C or D). The official QR system is identity + play distribution (`ai-passport.folotoy.cn/plays/`), **not** a runtime data channel.
+**Agreed architecture**: the device can never talk to an agent directly (no ASR/LLM on a C3); a bridge is mandatory. Original option table kept for reference: A LAN Wi-Fi (implemented variant: TCP + JSON lines, §6.3), B USB CDC, C phone BLE bridge (compressed audio), D official plays distribution (distribution only). Voice-style flow (not triggered): key PRESS → streamed recording up → bridge → agent → text/audio back → screen + speaker. The official QR system is identity + play distribution, **not** a runtime data channel.
 
 ### 6.2 NFC conclusion
 
 Permanently unusable from firmware (no wiring + the chip has no host interface + the C3 has no NFC radio). The only uses: read/rewrite its 144-byte NDEF with a phone (factory lock state unverified — back up the original before rewriting), or a hardware mod adding a PN532 on I2C0 (not recommended). Treat it as the device's permanent business card.
+
+### 6.3 Approval Remote — first shipped application of §6.1 (end-to-end 2026-10-25)
+
+**Need**: the user juggles permission prompts across many agents; the device receives them over the network and answers with three buttons.
+
+**Event-source finding (key)**: Magpie (usemagpie.ai, model gateway) **cannot supply approval events** — its plugin hooks live on the LLM-traffic layer (onRequest/onResponse/onUsage) while agent permission prompts never traverse the model API. The correct hook is the agent-native approval interface: Claude Code `--permission-prompt-tool` (official support for delegating permission prompts to an MCP tool; community precedents forward them to Telegram/email, blocking with a default 9-minute timeout). Magpie stays an optional add-on adapter (activity notifications).
+
+**Verified chain (simulator end-to-end ✓)**:
+```
+Claude Code (--permission-prompt-tool) → MCP stdio → bridge (approval-bridge/bridge.py)
+  → LAN TCP (JSON lines, token auth, timeout fail-safe = deny)
+  → firmware feature/approval-remote (approval_main.c)
+  → pending screen: OK=allow / DOWN=deny → decision travels back
+```
+
+- Bridge: `~/Codex/AI-Passport/approval-bridge/bridge.py` (hub/mcp/send modes; self-test plus device integration verified)
+- Firmware: `feature/approval-remote` branch, gate PASS, app 1.22 MB
+- Evidence: hub log `device connected → decision → allow (device)`; `send` prints `result: allow`
+
+**Simulator networking notes (read before reuse)**: the simulator Wi-Fi is the ESP-EMU virtual AP with fixed SSID `Emulator Host Bridge` / empty password (`wifi_cred.h` must match); start the server with `EMULATOR_NETWORK_ALLOW_PRIVATE=1` for LAN/host private addresses; the UART buffer holds only 52 lines and boot logs fill it — press the clear button before reading runtime logs; firmware entering the BLE ROM region crashes (unsupported-features.js), and the approval firmware keeps BT off.
+
+**TODO**: ① wire real Claude Code (hub resident + `--permission-prompt-tool` targeting the mcp mode; adjust format_permission_result after live testing) ② device deployment (real SSID/bridge IP into wifi_cred.h + segmented flash to preserve NVS) ③ UI polish and CJK font (Chinese detail currently renders as boxes — Montserrat has no CJK) ④ bridge discovery via mDNS instead of a hardcoded IP.
 
 ---
 
@@ -173,5 +186,6 @@ Permanently unusable from firmware (no wiring + the chip has no host interface +
 | --- | --- | --- |
 | 2026-10-23 | Rounded-screen design constraint (light only inside the rounded rect; corners stay black) | adopted, product-level constraint |
 | 2026-10-23 | macOS gate fix upstreamed as PR #113 | awaiting merge; local branches carry it |
-| 2026-10-23 | AI-connectivity options argued (four routes) | **parked**; resume at §6.1 stage 1 once the user picks a direction |
+| 2026-10-23 | AI-connectivity options argued (four routes) | unparked: first app Approval Remote verified end-to-end 2026-10-25 (§6.3) |
 | 2026-10-23 | Harness established (feature/dev-harness branch) | in force |
+| 2026-10-25 | Approval Remote chain fixed: agent-native approval hooks + bridge + TCP JSON lines; Magpie is not the event source | implemented and verified in the simulator |
