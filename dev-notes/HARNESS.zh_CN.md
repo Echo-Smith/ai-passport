@@ -169,7 +169,7 @@ export IDF_COMPONENT_STORAGE_URL=https://components-file.espressif.cn  # Managed
 
 **需求**：用户在多个 Agent 间审批权限请求疲于奔命；设备经网络接收推送，三键批准/拒绝。
 
-**事件源调研结论（关键）**：Magpie（usemagpie.ai，模型网关）**拿不到审批事件**——其插件钩子全在 LLM 流量层（onRequest/onResponse/onUsage），而 Agent 的权限确认不走模型 API。正确钩子是 Agent 原生审批接口：Claude Code `--permission-prompt-tool`（官方支持把权限确认交给 MCP 工具，社区已有接 Telegram/邮件的先例，阻塞等待、默认 9 分钟超时）。Magpie 保留为可选附加适配器（活动通知）。
+**事件源调研结论（2026-10-25 更新，按用户实际工具定序）**：用户主力为 **ZCode + Codex**（不用 Claude Code）。① **Codex 有官方外部审批**：`codex app-server`（CLI 内置子命令，JSON-RPC over stdio），审批以 server→client 请求外发（`execCommandApproval`/`applyPatchApproval`/`tool/requestUserInput` elicitation），客户端（桥）答复——VS Code 扩展即此机制，桥实现 codex 适配器即可接入，**第一实现目标**。② **ZCode（Electron 桌面应用）当前无公开外部审批接口**（本机检查：无 CLI/自动化入口，`~/.zcode/cli` 为会话数据目录）；选项：向 ZCode 提 feature request / macOS 辅助功能监听弹窗+模拟点击（脆弱 hack，仅兜底）。③ Claude Code `--permission-prompt-tool` 机制保留备用。④ Magpie 不能作审批事件源（插件钩子在 LLM 流量层），但可作活动通知（参照 magpie-buddy 读其 GET 接口）。**同类先例 magpie-buddy**（nullbeing/M5Stack CoreS3+Node 桥）：只读信息屏（路由/上下文/用量/配额），验证了"Magpie 插件无网络能力→必须桥"；可借鉴其 --discover 自动发现（替代硬编码桥 IP）与 AP+浏览器配网 UX。
 
 **已走通链路**（模拟器端到端验证 ✓）：
 ```
@@ -185,7 +185,7 @@ Claude Code (--permission-prompt-tool) → MCP stdio → 桥(approval-bridge/bri
 
 **模拟器网络要点（复用必读）**：模拟器 Wi-Fi 是 ESP-EMU 虚拟 AP，SSID 固定 `Emulator Host Bridge`/空密码（`wifi_cred.h` 需匹配）；`EMULATOR_NETWORK_ALLOW_PRIVATE=1` 启动 server 才能访问局域网/宿主私有地址；UART 缓冲仅 52 行，启动日志会灌满，看运行期日志先点"清空"；BLE 区固件会崩溃（unsupported-features.js 检测 ROM 区），审批固件未启用 BT。
 
-**待办**：① 接真 Claude Code（hub 常驻 + `--permission-prompt-tool` 指向 mcp 模式，MCP 返回格式按实测调整 format_permission_result）② 真机部署（真 SSID/桥 IP 写入 wifi_cred.h + 分段烧录保 NVS）③ UI 打磨与 CJK 字体（当前中文详情显示方块，Montserrat 无 CJK）④ 桥地址自动发现（mDNS）替代硬编码 IP。
+**待办（按用户实际工具重排）**：① **Codex 适配器**：桥 spawn `codex app-server`，实现 JSON-RPC 审批方法（execCommandApproval 等）→ 转设备（第一目标）② ZCode 外部审批：向 ZCode 提需求或辅助功能兜底（暂缓）③ 真机部署（真 SSID/桥 IP 写入 wifi_cred.h + 分段烧录保 NVS）④ UI 打磨与 CJK 字体（当前中文详情显示方块，Montserrat 无 CJK）⑤ 桥地址自动发现（mDNS，可借鉴 magpie-buddy --discover）替代硬编码 IP。
 
 ---
 
