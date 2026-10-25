@@ -231,6 +231,23 @@ Claude Code (--permission-prompt-tool) → MCP stdio → 桥(approval-bridge/bri
 **ZCode 开源发现（2026-10-25）**：zai-org/ZCode Apache-2.0 全源码开放（桌面/Web/CLI/后端/RPC 协议与 Agent SDK）。`zcode` CLI 支持非交互调用（apps/zcode-cli/docs/usage），server 有 HTTP/WS + token（ZCODE_SERVER_AUTH_TOKEN）。**ZCode 审批适配器变得可行**（经 server WS 协议接管审批），列 §6.3 待办第二位。
 
 
+### 6.7 ZCode 适配器（2026-10-25 端到端走通）
+
+`bridge.py zcode --task "..." --mode build`：spawn 桌面版自带 CLI（`/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs app-server --stdio`），审批转设备（agent 名 "zcode"），设备 allow→`{decision:"allow"}` / deny→`{decision:"deny",reason}`。
+
+**协议实测事实（zcode.cjs 0.17.0，行分隔 JSON、无 jsonrpc 字段、zod 严格校验）**：
+- 握手 `runtime/capabilities` → `session/create`{workspace:{workspacePath,workspaceKey}, mode}
+- **必须响应 `session/requestRuntimePreferences`（server→client 反向请求）**：缺 `nativeSearchEnhancementsEnabled` 布尔字段会话不激活（"Session is not active"）；响应 `{nativeSearchEnhancementsEnabled:false, memoryEnabled:false, toolSearchMode:"off"}`
+- sessionId 从 prefs 请求的 params 里取（create 响应不带）
+- 任务 `session/send`{sessionId, **content**}（不是 text）；完成信号 = `state.updated` 的 status 回 idle/error/cancelled（须在 send 之后才判定，建会话初始就是 idle）
+- 审批 = **`interaction/requestPermission`**（params: toolName/summary/detail/options）；响应用 legacy schema `{decision:"allow"|"deny"|"escalate"|"modify", reason?}`
+- 其他反向请求：`session/requestRuntimePreferences`(scope user-execution 会再来一次)、`interaction/requestUserInput`(自由问答，设备无法输入→回 -32601)、`interaction/requestOfficialMcpAuthHeaders`(回 -32601 仅该功能降级)
+- ZCode 桌面进程不对外监听 TCP（内嵌 server 走内部 IPC），桥只能自起 CLI 实例——用户日常桌面会话的审批不经桥；桥会话适合长任务/无人值守场景
+- 端到端证据：GLM-5.3 请求 [Write] → 设备双击 OK → allow → `/tmp/zcode-approval-e2e/hello.txt` 真实创建
+
+**统一网关至此**：手动 send / Codex / ZCode / Magpie 活动 四源齐接；WorkBuddy（腾讯，Electron 监听 18488/50863 等）为下一个候选（协议未开，待调研）。
+
+
 ---
 
 ## 7. 决策记录

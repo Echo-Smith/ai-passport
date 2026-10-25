@@ -221,6 +221,23 @@ End-to-end evidence: real codex traffic → plugin onRequest (diag log per hit) 
 **ZCode open-source finding (2026-10-25)**: zai-org/ZCode is Apache-2.0 with full sources (desktop/web/CLI/backend/RPC protocol and Agent SDK). The zcode CLI supports non-interactive use (apps/zcode-cli/docs/usage) and the server exposes HTTP/WS with tokens (ZCODE_SERVER_AUTH_TOKEN). **A ZCode approval adapter is now feasible** (take over approvals over the server WS protocol); queued as the second item of §6.3 TODO.
 
 
+### 6.7 ZCode adapter (end-to-end 2026-10-25)
+
+`bridge.py zcode --task "..." --mode build`: spawns the desktop-bundled CLI (`/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs app-server --stdio`), forwards approvals to the device (agent name "zcode"); device allow maps to `{decision:"allow"}` and deny to `{decision:"deny",reason}`.
+
+**Protocol facts measured on zcode.cjs 0.17.0 (newline-delimited JSON, no jsonrpc field, strict zod validation)**:
+- handshake `runtime/capabilities`, then `session/create` with workspace:{workspacePath,workspaceKey} and mode
+- **`session/requestRuntimePreferences` (a server-to-client reverse request) must be answered**: omitting the boolean `nativeSearchEnhancementsEnabled` leaves the session inactive ("Session is not active"); reply with `{nativeSearchEnhancementsEnabled:false, memoryEnabled:false, toolSearchMode:"off"}`
+- the sessionId arrives in the prefs request params, not in the create response
+- tasks go via `session/send` {sessionId, **content**} (not text); completion is `state.updated` status back to idle/error/cancelled (only meaningful after send — a fresh session is already idle)
+- approvals are **`interaction/requestPermission`** (params: toolName/summary/detail/options); reply with the legacy schema `{decision:"allow"|"deny"|"escalate"|"modify", reason?}`
+- other reverse requests: `session/requestRuntimePreferences` (fires once more with scope user-execution), `interaction/requestUserInput` (free-text questions — the device cannot type, answered -32601), `interaction/requestOfficialMcpAuthHeaders` (answered -32601, only that feature degrades)
+- the ZCode desktop process listens on no TCP port (embedded server over internal IPC), so the bridge must spawn its own CLI instance — approvals in the user's everyday desktop sessions do not traverse the bridge; bridge sessions suit long/unattended tasks
+- end-to-end evidence: GLM-5.3 requested [Write], a double-OK on the device returned allow, and `/tmp/zcode-approval-e2e/hello.txt` was really created
+
+**Unified gateway status**: manual send / Codex / ZCode / Magpie activity are all wired; WorkBuddy (Tencent, Electron listening on 18488/50863+) is the next candidate (protocol closed, research pending).
+
+
 ---
 
 ## 7. Decision log
