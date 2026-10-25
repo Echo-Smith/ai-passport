@@ -64,7 +64,7 @@ static int64_t s_notify_until_us;
 // ---- 对象引用 ----
 static lv_obj_t *scr;
 // 状态栏
-static lv_obj_t *lbl_link, *lbl_batt;
+static lv_obj_t *dot_link, *lbl_batt;
 // HOME
 static lv_obj_t *lbl_clock, *lbl_date, *lbl_home_hint;
 // MENU / 页面共用容器
@@ -113,11 +113,13 @@ static void build_home(void) {
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
     // 状态栏：左连接点 + 右电量（电量右上为仓库规范默认位）
-    lbl_link = lv_label_create(scr);
-    lv_obj_set_style_text_font(lbl_link, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl_link, lv_color_hex(COL_SUB), 0);
-    lv_label_set_text(lbl_link, "○");   // 未连桥
-    lv_obj_set_pos(lbl_link, 24, 14);
+    dot_link = lv_obj_create(scr);
+    style_reset(dot_link);
+    lv_obj_set_size(dot_link, 8, 8);
+    lv_obj_set_style_radius(dot_link, 4, 0);
+    lv_obj_set_style_bg_opa(dot_link, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(dot_link, lv_color_hex(COL_SUB), 0);
+    lv_obj_set_pos(dot_link, 24, 18);
 
     lbl_batt = make_label(scr, &lv_font_source_han_sans_sc_16_cjk, COL_SUB,
                           150, 10, 70);
@@ -171,8 +173,9 @@ static void menu_refresh(void) {
     for (int i = 0; i < MENU_COUNT; i++) {
         lv_obj_t *row = lv_obj_create(menu_list);
         style_reset(row);
-        lv_obj_set_size(row, 208, 64);
+        lv_obj_set_size(row, 208, 62);
         lv_obj_set_style_radius(row, 10, 0);
+        lv_obj_set_style_pad_hor(row, 8, 0);
         if (i == s_menu_sel) {
             lv_obj_set_style_bg_color(row, lv_color_hex(0xEAF2FF), 0);
             lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
@@ -183,9 +186,9 @@ static void menu_refresh(void) {
         lv_obj_set_style_radius(dot, 3, 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(dot, lv_color_hex(i == s_menu_sel ? COL_ACCENT : COL_HAIR), 0);
-        lv_obj_set_pos(dot, 12, 29);
+        lv_obj_set_pos(dot, 14, 28);
         lv_obj_t *t = make_label(row, &lv_font_source_han_sans_sc_16_cjk,
-                                 i == s_menu_sel ? COL_INK : COL_BODY, 28, 22, 150);
+                                 i == s_menu_sel ? COL_INK : COL_BODY, 30, 23, 160);
         lv_label_set_text(t, MENU_ITEMS[i]);
     }
 }
@@ -198,9 +201,11 @@ static void show_menu(void) {
     lv_label_set_text(cap, "菜单");
     menu_list = lv_obj_create(page_cont);
     style_reset(menu_list);
-    lv_obj_set_size(menu_list, 208, 238);
-    lv_obj_set_pos(menu_list, 0, 10);
+    lv_obj_set_size(menu_list, 208, 200);
+    lv_obj_set_pos(menu_list, 0, 40);
     lv_obj_clear_flag(menu_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(menu_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(menu_list, 6, 0);
     menu_refresh();
 }
 
@@ -224,24 +229,24 @@ static void show_activity_page(void) {
     for (int i = 0; i < n; i++) {
         lv_obj_t *row = lv_obj_create(list);
         style_reset(row);
-        lv_obj_set_size(row, 192, LV_SIZE_CONTENT);
-        lv_obj_set_style_pad_bottom(row, 8, 0);
-        // 发丝线
+        lv_obj_set_size(row, 184, LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_bottom(row, 10, 0);
         if (i > 0) {
             lv_obj_t *line = lv_obj_create(row);
             style_reset(line);
-            lv_obj_set_size(line, 192, 1);
+            lv_obj_set_size(line, 184, 1);
             lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
             lv_obj_set_style_bg_color(line, lv_color_hex(COL_HAIR), 0);
-            lv_obj_set_pos(line, 0, -4);
+            lv_obj_set_pos(line, 0, 0);
         }
+        // 发丝线
         char head[64];
         snprintf(head, sizeof(head), "%s  %s", s_activity[i].at,
                  s_activity[i].agent);
         lv_obj_t *h = make_label(row, &lv_font_source_han_sans_sc_16_cjk,
-                                 COL_BODY, 0, 2, 192);
+                                 COL_BODY, 0, 10, 184);
         lv_label_set_text(h, head);
-        lv_obj_t *m = make_label(row, &lv_font_montserrat_14, COL_SUB, 0, 24, 192);
+        lv_obj_t *m = make_label(row, &lv_font_montserrat_14, COL_SUB, 0, 32, 184);
         lv_label_set_text(m, s_activity[i].model);
     }
 }
@@ -337,15 +342,15 @@ static void build_overlay(void) {
 
     ov_tag = make_label(ov_panel, &lv_font_montserrat_14, COL_ACCENT, 14, 12, 180);
     ov_title = make_label(ov_panel, &lv_font_source_han_sans_sc_16_cjk, COL_INK,
-                          14, 32, 180);
+                          16, 34, 176);
     ov_detail = make_label(ov_panel, &lv_font_montserrat_14, COL_BODY,
-                           14, 76, 180);
+                           16, 62, 176);
     lv_label_set_long_mode(ov_detail, LV_LABEL_LONG_WRAP);
     ov_page_dots = make_label(ov_panel, &lv_font_source_han_sans_sc_16_cjk,
-                              COL_SUB, 14, 152, 180);
+                              COL_SUB, 16, 156, 176);
     lv_label_set_text(ov_page_dots, "1/2");
     ov_hint = make_label(ov_panel, &lv_font_source_han_sans_sc_16_cjk, COL_BODY,
-                         14, 178, 180);
+                         16, 184, 176);
 }
 
 static void overlay_show(bool show) {
@@ -531,9 +536,8 @@ static void handle_msg(const ui_msg_t *m) {
             }
             break;
         case UI_MSG_STATUS:
-            // 连接状态：○ 未连 / ● 已连（绿点为唯一状态色例外之一）
-            lv_label_set_text(lbl_link, strstr(m->title, "up") ? "●" : "○");
-            lv_obj_set_style_text_color(lbl_link,
+            // 连接状态点：灰 = 未连桥，绿 = 已连
+            lv_obj_set_style_bg_color(dot_link,
                 lv_color_hex(strstr(m->title, "up") ? COL_ALLOW : COL_SUB), 0);
             break;
     }
