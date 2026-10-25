@@ -238,6 +238,17 @@ End-to-end evidence: real codex traffic → plugin onRequest (diag log per hit) 
 **Unified gateway status**: manual send / Codex / ZCode / Magpie activity are all wired; WorkBuddy (Tencent, Electron listening on 18488/50863+) is the next candidate (protocol closed, research pending).
 
 
+### 6.8 WorkBuddy adapter, first probe (started 2026-10-25)
+
+WorkBuddy (Tencent CodeBuddy lineage, Electron) listens on 4 loopback ports (18488/50863/50874/51637), all answering `{"ok":false,"error":"Not Found"}` JSON — a local API exists with unknown paths; the asar bundles `/cli/bin/codebuddy` (CodeBuddy Code CLI, same lineage as Claude Code — **likely has its own external-approval mechanism**, check for a `--permission-prompt-tool` analogue or hooks) plus `@openai/agents-core` (its MCP Approvals module is a reference). asar subpath extraction errors out; unpack the whole archive next. **To continue**: unpack asar → locate the codebuddy CLI approval flag → write the adapter in the codex/zcode pattern.
+
+### 3.2 addendum: v0.5 front end finalized (2026-10-25, commit 0c6ec63, flashed)
+
+Status bar on one row: 14 px time (left) | battery outline 36×18 with the green percentage drawn inside (red when low) + Wi-Fi fan (right). Home follows the user's annotated layout: magpie (resampled from the official usemagpie.ai SVG, 36×20) upper-left beside the date; a large card below holds the sync status line and the tightest Magpie quota remaining. Settings now has two selectable rows: **外观** (dark/light) and **屏幕调光** (cycles 40/60/80/100, persisted in NVS; brightness is its own setting, decoupled from the theme). Popup semantics stay as v0.4: centered, source agent top-left, UP/DOWN paging, OK short-press allows, long-OK denies, green/black feedback.
+
+**Network note**: the reported "no network" was the ~5 s boot window; UART evidence shows normal join (RSSI -42) and automatic bridge reconnect. The real device occasionally shows `--%` for the CW2017 read — to observe.
+
+
 ---
 
 ## 7. Decision log

@@ -248,6 +248,17 @@ Claude Code (--permission-prompt-tool) → MCP stdio → 桥(approval-bridge/bri
 **统一网关至此**：手动 send / Codex / ZCode / Magpie 活动 四源齐接；WorkBuddy（腾讯，Electron 监听 18488/50863 等）为下一个候选（协议未开，待调研）。
 
 
+### 6.8 WorkBuddy 适配器初探（2026-10-25 启动）
+
+WorkBuddy（腾讯 CodeBuddy 系，Electron）桌面进程监听 4 个本机端口（18488/50863/50874/51637），HTTP 均返回 `{"ok":false,"error":"Not Found"}` JSON 风格——有本地 API 但路径未知；asar 内含 `/cli/bin/codebuddy`（CodeBuddy Code CLI，与 Claude Code 同构谱系，**大概率有自己的外部审批机制**，优先查 `--permission-prompt-tool` 类似物或 hooks）+ `@openai/agents-core`（其 MCP Approvals 模块可参考）。asar 提取工具对子路径报错，需改用整包解包。**待续**：解包 asar → 定位 codebuddy CLI 审批参数 → 仿 codex/zcode 模式写适配器。
+
+### 3.2 补充：v0.5 前端定稿（2026-10-25，提交 0c6ec63，真机已烧）
+
+状态栏水平一行：时间 14px（左）｜电池框 36×18（**百分比绿色画在框内**，低电量红）+ WiFi 扇形（右）。首页按用户标注布局：喜鹊（官方 usemagpie.ai SVG 光栅化采样 36×20）左上 + 日期右上；下方大卡 = 同步状态行 + "余量"（最紧额度）。设置双行选择：**外观**（深色/浅色）+ **屏幕调光**（40/60/80/100 循环，NVS 持久化，亮度独立于主题）。弹窗语义 v0.4 维持：居中、来源 agent 左上、UP/DOWN 翻页、OK 短按=允许、长按 OK=拒绝、绿/黑反馈。
+
+**网络诊断备注**：用户报"网络没连上"实为开机 ~5s 窗口期；UART 证据显示 Wi-Fi 正常入网（RSSI -42）并自动连桥。真机 CW2017 偶发 `--%`（电量读取失败）待观察。
+
+
 ---
 
 ## 7. 决策记录
