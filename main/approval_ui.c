@@ -554,6 +554,9 @@ static void overlay_brightness(bool boost) {
 
 static void overlay_show(bool show) {
     if (show) {
+        // 运行时创建的页面卡片会盖住弹窗——显示前把蒙层与提示条提到最顶
+        lv_obj_move_foreground(veil);
+        if (footer_label) lv_obj_move_foreground(footer_label);
         lv_obj_clear_flag(veil, LV_OBJ_FLAG_HIDDEN);
         overlay_brightness(true);
     } else {
