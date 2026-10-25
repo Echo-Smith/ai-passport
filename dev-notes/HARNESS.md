@@ -244,7 +244,7 @@ WorkBuddy (Tencent CodeBuddy lineage, Electron) listens on 4 loopback ports (184
 
 ### 3.2 addendum: v0.5 front end finalized (2026-10-25, commit 0c6ec63, flashed)
 
-Status bar on one row: 14 px time (left) | battery outline 36×18 with the green percentage drawn inside (red when low) + Wi-Fi fan (right). Home follows the user's annotated layout: magpie (resampled from the official usemagpie.ai SVG, 36×20) upper-left beside the date; a large card below holds the sync status line and the tightest Magpie quota remaining. Settings now has two selectable rows: **外观** (dark/light) and **屏幕调光** (cycles 40/60/80/100, persisted in NVS; brightness is its own setting, decoupled from the theme). Popup semantics stay as v0.4: centered, source agent top-left, UP/DOWN paging, OK short-press allows, long-OK denies, green/black feedback.
+Status bar on one row: 14 px time (left) | battery outline 36×18 with the green percentage drawn inside (red when low) + Wi-Fi fan (right). Home follows the user's annotated layout: magpie (resampled from the official usemagpie.ai SVG, 36×20) upper-left beside the date; a large card below holds the sync status line and the tightest Magpie quota remaining. Settings now has two selectable rows: **Appearance** (dark/light) and **Screen dimming** (cycles 40/60/80/100, persisted in NVS; brightness is its own setting, decoupled from the theme). Popup semantics stay as v0.4: centered, source agent top-left, UP/DOWN paging, OK short-press allows, long-OK denies, green/black feedback.
 
 **Network note**: the reported "no network" was the ~5 s boot window; UART evidence shows normal join (RSSI -42) and automatic bridge reconnect. The real device occasionally shows `--%` for the CW2017 read — to observe.
 
