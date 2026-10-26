@@ -43,7 +43,11 @@ static const palette_t PAL_DARK = {
     .deny = 0xEA4335, .veil = 0x000000 };
 static const palette_t *P = &PAL_LIGHT;
 static bool s_dark;
-static uint8_t s_dim_idx = 2;   // 40/60/80/100
+static uint8_t s_dim_idx = 2;        // 40/60/80/100
+static uint8_t s_off_idx = 2;        // 息屏：0 关 / 1=30s / 2=60s / 3=120s
+static bool s_screen_off;
+static int64_t s_last_activity_us;
+static const uint16_t kOffSeconds[4] = { 0, 30, 60, 120 };
 
 // ---- 状态 ----
 typedef enum { PG_HOME, PG_MENU, PG_ACTIVITY, PG_USAGE, PG_PUSH, PG_SETTINGS, PG_ABOUT } page_t;
@@ -96,6 +100,8 @@ static void show_menu(void);
 static void show_push_page(void);
 static void settings_cycle_dim(void);
 static uint8_t s_set_sel;
+static const char *const kOffTxt[4] = { "关闭", "30 秒", "60 秒", "120 秒" };
+#define SET_ROWS 3
 static void approval_ui_build_all(void);
 
 // ======================================================================
@@ -323,6 +329,18 @@ static void apply_backlight(void) {
     bsp_display_backlight(backlight_level());
 }
 
+static void screen_off_enter(void) {
+    s_screen_off = true;
+    bsp_display_backlight(0);
+}
+
+static void screen_off_exit(void) {
+    if (!s_screen_off) return;
+    s_screen_off = false;
+    apply_backlight();
+    s_last_activity_us = esp_timer_get_time();
+}
+
 static void refresh_battery(void) {
     int soc = bsp_battery_soc();
     uint32_t col;
@@ -543,6 +561,19 @@ static void show_settings_page(void) {
                               s_set_sel == 1 ? P->accent : P->sub, 110, 19, 86);
     lv_obj_set_style_text_align(v1, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(v1, kDimTxt[s_dim_idx]);
+    // 行 2：息屏时间
+    lv_obj_t *r2 = make_card(page_cont, 208, 52);
+    lv_obj_set_style_pad_hor(r2, 12, 0);
+    if (s_set_sel == 2) {
+        lv_obj_set_style_bg_color(r2, lv_color_hex(P->sel_bg), 0);
+        lv_obj_set_style_border_color(r2, lv_color_hex(P->accent), 0);
+    }
+    lv_obj_t *t2 = make_label(r2, &app_font_16, P->ink, 0, 16, 110);
+    lv_label_set_text(t2, "息屏时间");
+    lv_obj_t *v2 = make_label(r2, &lv_font_montserrat_14,
+                              s_set_sel == 2 ? P->accent : P->sub, 110, 19, 86);
+    lv_obj_set_style_text_align(v2, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(v2, kOffTxt[s_off_idx]);
     ui_footer("上下 选择 · OK 调整 · 长按返回");
 }
 
@@ -568,6 +599,18 @@ static void settings_cycle_dim(void) {
         nvs_close(h);
     }
     apply_backlight();
+    show_settings_page();
+}
+
+static void settings_cycle_off(void) {
+    s_off_idx = (s_off_idx + 1) % 4;
+    nvs_handle_t h;
+    if (nvs_open("appr", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "off", s_off_idx);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    s_last_activity_us = esp_timer_get_time();
     show_settings_page();
 }
 
@@ -648,6 +691,7 @@ static void overlay_show(bool show) {
 }
 
 static void show_request_p1(void) {
+    s_last_activity_us = esp_timer_get_time();
     s_overlay = OV_REQ_P1;
     lv_label_set_text_fmt(ov_tag, "%s", s_req_agent);
     lv_label_set_text(ov_title, "请求确认");
@@ -788,15 +832,13 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
             }
         }
     } else if (s_page == PG_SETTINGS) {
-        if (btn == BSP_BTN_UP) {
-            s_set_sel = (s_set_sel + 1) % 2;
-            show_settings_page();
-        } else if (btn == BSP_BTN_DOWN) {
-            s_set_sel = (s_set_sel + 1) % 2;
+        if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
+            s_set_sel = (s_set_sel + 1) % SET_ROWS;
             show_settings_page();
         } else if (btn == BSP_BTN_OK) {
             if (s_set_sel == 0) settings_toggle_dark();
-            else settings_cycle_dim();
+            else if (s_set_sel == 1) settings_cycle_dim();
+            else settings_cycle_off();
         }
     } else if (btn == BSP_BTN_OK) {
         show_menu();
@@ -880,8 +922,11 @@ void approval_ui_init(QueueHandle_t decision_out) {
     if (nvs_open("appr", NVS_READONLY, &h) == ESP_OK) {
         uint8_t d2 = 2;
         if (nvs_get_u8(h, "dim", &d2) == ESP_OK && d2 < 4) s_dim_idx = d2;
+        uint8_t d3 = 2;
+        if (nvs_get_u8(h, "off", &d3) == ESP_OK && d3 < 4) s_off_idx = d3;
         nvs_close(h);
     }
+    s_last_activity_us = esp_timer_get_time();
     P = s_dark ? &PAL_DARK : &PAL_LIGHT;
     apply_backlight();
     approval_ui_build_all();
@@ -903,7 +948,12 @@ void approval_ui_pump(void) {
     ui_msg_t m;
     while (s_msg_q && xQueueReceive(s_msg_q, &m, 0) == pdTRUE) handle_msg(&m);
     key_evt_t k;
-    while (s_key_q && xQueueReceive(s_key_q, &k, 0) == pdTRUE) handle_key(k.btn, k.ev);
+    while (s_key_q && xQueueReceive(s_key_q, &k, 0) == pdTRUE) {
+        if (s_screen_off) { screen_off_exit(); continue; }   // 唤醒即吞键
+        handle_key(k.btn, k.ev);
+        s_last_activity_us = esp_timer_get_time();
+    }
+    if (s_screen_off) return;            // 息屏中不做任何绘制
     pump_flash();
     magpie_pump_wag();
     if (s_overlay == OV_NOTIFY && s_notify_until_us
@@ -921,6 +971,13 @@ void approval_ui_pump(void) {
     if (now - last_refresh >= 3) {
         last_refresh = now;
         refresh_signal();
+    }
+    // 息屏倒计时（弹窗/闪烁期间不熄屏）
+    uint16_t off_s = kOffSeconds[s_off_idx];
+    if (off_s && s_overlay == OV_NONE && s_page != PG_SETTINGS
+        && esp_timer_get_time() - s_last_activity_us
+               >= (int64_t)off_s * 1000000) {
+        screen_off_enter();
     }
 }
 
