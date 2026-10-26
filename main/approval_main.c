@@ -125,6 +125,7 @@ static void send_decision(int sock, const char *id, bool allow) {
 }
 
 static void send_hello(int sock) {
+    ESP_LOGI(TAG, "hello token len=%u", (unsigned)strlen(BRIDGE_TOKEN));
     cJSON *obj = cJSON_CreateObject();
     cJSON_AddStringToObject(obj, "type", "hello");
     cJSON_AddStringToObject(obj, "device", "passport");
@@ -134,6 +135,7 @@ static void send_hello(int sock) {
 }
 
 static void post_msg(cJSON *root, const char *type) {
+    ESP_LOGI(TAG, "post_msg type=%s", type);
     ui_msg_t m = { 0 };
     m.kind = strcmp(type, "request") == 0 ? UI_MSG_REQUEST
             : strcmp(type, "notify") == 0 ? UI_MSG_NOTIFY

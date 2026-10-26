@@ -184,8 +184,6 @@ static const char *const MAGPIE_B[] = {
 };
 #define MAGPIE_W 32
 #define MAGPIE_H 13
-
-#define MAGPIE_H (int)(sizeof(MAGPIE) / sizeof(MAGPIE[0]))
 #define MP_SCALE 2
 static uint16_t magpie_buf[MAGPIE_W * MP_SCALE * MAGPIE_H * MP_SCALE];
 static lv_obj_t *magpie_cv;
@@ -386,21 +384,39 @@ static void ui_footer(const char *text) {
 static void show_home(void) {
     s_page = PG_HOME;
     open_page_container();
-    magpie_build(page_cont);
-    lbl_date = make_label(page_cont, &app_font_16,
-                          P->sub, 0, 112, 208);
-    lv_obj_set_style_text_align(lbl_date, LV_TEXT_ALIGN_CENTER, 0);
+    magpie_build(page_cont);                       // 左上喜鹊
+    lbl_date = make_label(page_cont, &app_font_16, P->body, 108, 12, 100);
+    lv_obj_set_style_text_align(lbl_date, LV_TEXT_ALIGN_RIGHT, 0);
     if (s_hour >= 0) {
-        lv_label_set_text_fmt(lbl_date, "%s  %d月%d日", WDAY_CN[s_wday % 7],
-                              s_month, s_day);
+        lv_label_set_text_fmt(lbl_date, "%s\n%d月%d日",
+                              WDAY_CN[s_wday % 7], s_month, s_day);
     } else {
-        lv_label_set_text(lbl_date, "时间同步中");
+        lv_label_set_text(lbl_date, "时间\n同步中");
     }
-    lbl_usage = make_label(page_cont, &lv_font_montserrat_14, P->sub,
-                           0, 140, 208);
-    lv_obj_set_style_text_align(lbl_usage, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(lbl_usage, s_usage_valid ? s_usage_tokens : "");
+    // 卡 1：7 日 token 消耗
+    lv_obj_t *c1 = make_card(page_cont, 208, 68);
+    lv_obj_set_pos(c1, 0, 86);
+    lv_obj_set_style_pad_hor(c1, 12, 0);
+    lv_obj_t *l1 = make_label(c1, &app_font_16, P->sub, 0, 8, 184);
+    lv_label_set_text(l1, "Token 消耗 · 7 日");
+    lbl_usage = make_label(c1, &lv_font_montserrat_20, P->ink, 0, 28, 184);
+    lv_label_set_text(lbl_usage, s_usage_valid && s_usage_tokens[0]
+                                 ? s_usage_tokens : "--");
+    // 卡 2：剩余额度（最紧账号）——名称与数值分两行，避免截断
+    lv_obj_t *c2 = make_card(page_cont, 208, 68);
+    lv_obj_set_pos(c2, 0, 162);
+    lv_obj_set_style_pad_hor(c2, 12, 0);
+    lv_obj_t *l2 = make_label(c2, &app_font_16, P->sub, 0, 6, 184);
+    if (s_usage_valid && s_quota_n > 0) {
+        lv_label_set_text_fmt(l2, "Token 剩余 · %.30s", s_quotas[0].name);
+    } else {
+        lv_label_set_text(l2, "Token 剩余");
+    }
+    lbl_status = make_label(c2, &lv_font_montserrat_20, P->ink, 0, 26, 184);
+    lv_label_set_text(lbl_status,
+        (s_usage_valid && s_quota_n > 0) ? s_quotas[0].left : "--");
     ui_footer("OK 菜单");
+    magpie_wag();                                  // 回到桌面挥翅
 }
 
 // ======================================================================
@@ -774,9 +790,18 @@ static void usage_apply(const ui_msg_t *m) {
         strlcpy(s_quotas[i].left, m->quotas[i].left, sizeof(s_quotas[i].left));
     }
     s_usage_valid = true;
-    if (s_page == PG_HOME && lbl_usage) {
-        lv_label_set_text(lbl_usage,
-            s_quota_n > 0 ? s_quotas[0].left : s_usage_tokens);
+    if (s_page == PG_HOME) {
+        if (lbl_usage) {                     // 卡 1：7 日消耗
+            lv_label_set_text(lbl_usage,
+                s_usage_tokens[0] ? s_usage_tokens : "--");
+        }
+        if (lbl_status) {                    // 卡 2：剩余额度
+            if (s_quota_n > 0) {
+                lv_label_set_text(lbl_status, s_quotas[0].left);
+            } else {
+                lv_label_set_text(lbl_status, "--");
+            }
+        }
     }
 }
 
@@ -911,7 +936,7 @@ void approval_ui_build_all(void) {
 
 void approval_ui_init(QueueHandle_t decision_out) {
     s_decision_q = decision_out;
-    s_msg_q = xQueueCreate(8, sizeof(ui_msg_t));
+    s_msg_q = xQueueCreate(4, sizeof(ui_msg_t));
     s_key_q = xQueueCreate(8, sizeof(key_evt_t));
     nvs_handle_t h;
     if (nvs_open("appr", NVS_READONLY, &h) == ESP_OK) {
@@ -934,7 +959,8 @@ void approval_ui_init(QueueHandle_t decision_out) {
 }
 
 void approval_ui_post(const ui_msg_t *msg) {
-    if (s_msg_q) (void)xQueueSend(s_msg_q, msg, 0);
+    if (!s_msg_q) return;
+    (void)xQueueSend(s_msg_q, msg, 0);
 }
 
 void approval_ui_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
@@ -983,14 +1009,9 @@ void approval_ui_pump(void) {
 
 void approval_ui_set_time(int hour, int minute, int wday, int month, int day) {
     s_hour = hour; s_min = minute; s_wday = wday; s_month = month; s_day = day;
-    if (s_page == PG_HOME) {
-        if (lbl_date) {
-            lv_label_set_text_fmt(lbl_date, "%s\n%d月%d日",
-                                  WDAY_CN[s_wday % 7], s_month, s_day);
-        }
-        if (lbl_status) {
-            lv_label_set_text(lbl_status, "Magpie 用量");
-        }
+    if (s_page == PG_HOME && lbl_date) {
+        lv_label_set_text_fmt(lbl_date, "%s\n%d月%d日",
+                              WDAY_CN[s_wday % 7], s_month, s_day);
     }
 }
 
