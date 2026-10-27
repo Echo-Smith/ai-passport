@@ -133,7 +133,7 @@ static void show_menu(void);
 static void show_push_page(void);
 static void settings_cycle_dim(void);
 static uint8_t s_set_sel;
-static const char *const kOffTxt[4] = { "关闭", "30 秒", "60 秒", "120 秒" };
+static const char *const kOffTxt[4] = { "关", "30s", "60s", "120s" };
 #define SET_ROWS 4
 static void approval_ui_build_all(void);
 
@@ -677,6 +677,7 @@ static void show_settings_page(void) {
     open_page_container();
     lv_obj_set_flex_flow(page_cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(page_cont, 8, 0);
+    lv_obj_set_scrollbar_mode(page_cont, LV_SCROLLBAR_MODE_OFF);
     // 行 0：外观（深色/浅色）
     lv_obj_t *r0 = make_card(page_cont, 208, 52);
     lv_obj_set_style_pad_hor(r0, 12, 0);
@@ -687,7 +688,7 @@ static void show_settings_page(void) {
     lv_obj_t *t0 = make_label(r0, &app_font_16, P->ink, 0, 16, 110);
     lv_label_set_text(t0, "外观");
     lv_obj_t *v0 = make_label(r0, &app_font_16,
-                              s_dark ? P->accent : P->sub, 110, 16, 86);
+                              s_dark ? P->accent : P->sub, 105, 16, 79);
     lv_obj_set_style_text_align(v0, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(v0, s_dark ? "深色" : "浅色");
     // 行 1：屏幕调光（40/60/80/100 循环）
@@ -701,7 +702,7 @@ static void show_settings_page(void) {
     lv_label_set_text(t1, "屏幕调光");
     static const char *const kDimTxt[4] = { "40%", "60%", "80%", "100%" };
     lv_obj_t *v1 = make_label(r1, &lv_font_montserrat_14,
-                              s_set_sel == 1 ? P->accent : P->sub, 110, 19, 86);
+                              s_set_sel == 1 ? P->accent : P->sub, 105, 19, 79);
     lv_obj_set_style_text_align(v1, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(v1, kDimTxt[s_dim_idx]);
     // 行 2：息屏时间
@@ -714,7 +715,7 @@ static void show_settings_page(void) {
     lv_obj_t *t2 = make_label(r2, &app_font_16, P->ink, 0, 16, 110);
     lv_label_set_text(t2, "息屏时间");
     lv_obj_t *v2 = make_label(r2, &lv_font_montserrat_14,
-                              s_set_sel == 2 ? P->accent : P->sub, 110, 19, 86);
+                              s_set_sel == 2 ? P->accent : P->sub, 105, 19, 79);
     lv_obj_set_style_text_align(v2, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(v2, kOffTxt[s_off_idx]);
     // 行 3：重新配网
