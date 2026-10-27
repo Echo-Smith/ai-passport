@@ -193,7 +193,7 @@ static esp_err_t h_save(httpd_req_t *req) {
     }
     buf[n] = 0;
     // 极简解析（避免引入 cJSON 到配网关键路径）
-    char ssid[33] = {0}, pass[64] = {0}, pin[8] = {0};
+    char ssid[33] = {0}, pass[64] = {0};
     const char *p;
     if ((p = strstr(buf, "\"ssid\":\""))) {
         p += 7;
@@ -205,14 +205,9 @@ static esp_err_t h_save(httpd_req_t *req) {
         int i = 0;
         while (*p && *p != '"' && i < 63) pass[i++] = *p++;
     }
-    if ((p = strstr(buf, "\"pin\":\""))) {
-        p += 6;
-        int i = 0;
-        while (*p && *p != '"' && i < 4) pin[i++] = *p++;
-    }
-    if (!ssid[0] || strcmp(pin, s_pin) != 0) {
+    if (!ssid[0]) {
         httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"配网码错误\"}");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"缺少 SSID\"}");
         return ESP_OK;
     }
     wifi_store_add(ssid, pass);
