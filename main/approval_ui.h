@@ -14,6 +14,7 @@ typedef enum {
     UI_MSG_NOTIFY,     // 活动通知（覆盖条，TTL 自动消失）
     UI_MSG_USAGE,      // Magpie 用量/额度（刷新用量页与首页摘要）
     UI_MSG_HEALTH,     // 推送健康（桥连接/设备数/待决列表）
+    UI_MSG_SETTINGS,   // 网页下发的详细设置
     UI_MSG_CANCEL,     // 清除覆盖层（桥取消/断线）
 } ui_msg_kind_t;
 

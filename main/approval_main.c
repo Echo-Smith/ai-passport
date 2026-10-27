@@ -150,7 +150,21 @@ static void post_msg(cJSON *root, const char *type) {
     strlcpy(m.agent, agent ? agent : "?", sizeof(m.agent));
     strlcpy(m.title, title ? title : "(no title)", sizeof(m.title));
     strlcpy(m.detail, detail ? detail : "", sizeof(m.detail));
-    if (strcmp(type, "usage") == 0) {
+    if (strcmp(type, "settings") == 0) {
+        m.kind = UI_MSG_SETTINGS;
+        cJSON *dim = cJSON_GetObjectItem(root, "dim_percent");
+        cJSON *off = cJSON_GetObjectItem(root, "screen_off_s");
+        cJSON *dark = cJSON_GetObjectItem(root, "dark");
+        cJSON *ttl = cJSON_GetObjectItem(root, "notify_ttl_s");
+        cJSON *qs = cJSON_GetObjectItem(root, "quiet_start");
+        cJSON *qe = cJSON_GetObjectItem(root, "quiet_end");
+        if (dim) m.quota_n = dim->valueint;          // 复用字段承载设置
+        if (off) m.timeout_s = off->valueint;
+        if (dark) m.id[0] = cJSON_IsTrue(dark) ? '1' : '0';
+        if (ttl) m.agent[0] = (char)ttl->valueint;
+        if (qs && cJSON_IsString(qs)) strlcpy(m.title, qs->valuestring, sizeof(m.title));
+        if (qe && cJSON_IsString(qe)) strlcpy(m.detail, qe->valuestring, sizeof(m.detail));
+    } else if (strcmp(type, "usage") == 0) {
         m.kind = UI_MSG_USAGE;
         const char *tokens = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tokens"));
         strlcpy(m.tokens, tokens ? tokens : "", sizeof(m.tokens));
@@ -214,6 +228,7 @@ static void net_task(void *arg) {
                         if (type && (strcmp(type, "request") == 0
                                      || strcmp(type, "notify") == 0
                                      || strcmp(type, "usage") == 0
+                                     || strcmp(type, "settings") == 0
                                      || strcmp(type, "cancel") == 0)) {
                             post_msg(root, type);
                         } else if (type && strcmp(type, "welcome") == 0) {
