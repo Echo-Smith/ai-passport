@@ -234,7 +234,8 @@ void wifi_prov_start(void) {
     wifi_prov_pin(s_pin, sizeof(s_pin));
     s_active = true;
 
-    // 切 APSTA：AP 提供配网热点，STA 保留扫描能力
+    // 先停掉 STA 模式（已启动状态下切模式 AP 不会广播），再切 APSTA
+    esp_wifi_stop();
     esp_wifi_set_mode(WIFI_MODE_APSTA);
     wifi_config_t ap = { 0 };
     strlcpy((char *)ap.ap.ssid, s_ap_ssid, sizeof(ap.ap.ssid));
