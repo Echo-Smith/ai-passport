@@ -41,7 +41,7 @@ endif()
 message(STATUS "approval: credentials from ${AP_CRED_SRC}")
 
 idf_component_register(
-    SRCS "approval_main.c" "approval_ui.c" "app_font_16.c"
+    SRCS "approval_main.c" "approval_ui.c" "app_font_16.c" "wifi_store.c" "wifi_provision.c"
     INCLUDE_DIRS "." "${CMAKE_CURRENT_BINARY_DIR}"
-    REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash json lwip
+    REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash json lwip esp_http_server
 )

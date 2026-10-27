@@ -15,6 +15,7 @@ typedef enum {
     UI_MSG_USAGE,      // Magpie 用量/额度（刷新用量页与首页摘要）
     UI_MSG_HEALTH,     // 推送健康（桥连接/设备数/待决列表）
     UI_MSG_SETTINGS,   // 网页下发的详细设置
+    UI_MSG_PROVISION,  // 配网模式（title=AP名 detail=配网码）
     UI_MSG_CANCEL,     // 清除覆盖层（桥取消/断线）
 } ui_msg_kind_t;
 

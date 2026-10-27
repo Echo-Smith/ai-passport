@@ -8,6 +8,8 @@
 #include "bsp_battery.h"
 #include "bsp_pins.h"
 #include "approval_ui.h"
+#include "wifi_store.h"
+#include "wifi_provision.h"
 #include "wifi_cred_gen.h"
 
 #include "esp_log.h"
@@ -32,31 +34,83 @@ static const char *TAG = "approval";
 #define WIFI_BIT_GOT_IP (1 << 0)
 
 static EventGroupHandle_t s_wifi_events;
+static void wifi_prov_task(void *arg);
+static bool wifi_connect_best(void);
 static QueueHandle_t s_decision_q;   // ui → net：审批决定
 
 // ==========================================================================
 // Wi-Fi STA
 // ==========================================================================
+static int s_wifi_retry;
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id,
                                void *data) {
     (void)arg;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        // wifi_connect_best / 配网任务负责发起连接
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        esp_wifi_connect();
+        if (wifi_prov_active()) return;   // 配网中不重连
+        if (++s_wifi_retry <= 3) {
+            esp_wifi_connect();
+        } else {
+            ESP_LOGW(TAG, "Wi-Fi 连接失败 %d 次，进配网模式", s_wifi_retry);
+            xTaskCreate(wifi_prov_task, "wifi_prov", 4096, NULL, 3, NULL);
+        }
         ui_msg_t m = { 0 };
         m.kind = UI_MSG_STATUS;
         strlcpy(m.title, "down", sizeof(m.title));
         approval_ui_post(&m);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        s_wifi_retry = 0;
         ESP_LOGI(TAG, "Wi-Fi 已连接");
         xEventGroupSetBits(s_wifi_events, WIFI_BIT_GOT_IP);
     }
 }
 
+// 从已存多组 Wi-Fi 中扫描择优连接；无匹配时返回 false（进配网模式）
+static bool wifi_connect_best(void) {
+    wifi_scan_config_t sc = { 0 };
+    esp_wifi_scan_start(&sc, true);
+    uint16_t n = 0;
+    esp_wifi_scan_get_ap_num(&n);
+    static wifi_ap_record_t recs[20];
+    if (n > 20) n = 20;
+    esp_wifi_scan_get_ap_records(&n, recs);
+    // 已存网络按存储顺序优先、再按 RSSI 择优
+    int best_store = -1, best_scan = -1, best_rssi = -1000;
+    for (int i = 0; i < wifi_store_count(); i++) {
+        const wifi_net_t *net = wifi_store_get(i);
+        for (int k = 0; k < (int)n; k++) {
+            if (strcmp((char *)recs[k].ssid, net->ssid) == 0 &&
+                recs[k].rssi > best_rssi) {
+                best_store = i; best_scan = k; best_rssi = recs[k].rssi;
+            }
+        }
+    }
+    if (best_store >= 0) {
+        const wifi_net_t *net = wifi_store_get(best_store);
+        wifi_config_t wc = { 0 };
+        strlcpy((char *)wc.sta.ssid, net->ssid, sizeof(wc.sta.ssid));
+        strlcpy((char *)wc.sta.password, net->pass, sizeof(wc.sta.password));
+        wc.sta.channel = recs[best_scan].primary;   // 加速连接
+        esp_wifi_set_config(WIFI_IF_STA, &wc);
+        ESP_LOGI(TAG, "连接已存 Wi-Fi: %s (%d dBm)", net->ssid, best_rssi);
+        return true;
+    }
+    // 扫描没找到：试第一组（覆盖隐藏网络）
+    if (wifi_store_count() > 0) {
+        const wifi_net_t *net = wifi_store_get(0);
+        wifi_config_t wc = { 0 };
+        strlcpy((char *)wc.sta.ssid, net->ssid, sizeof(wc.sta.ssid));
+        strlcpy((char *)wc.sta.password, net->pass, sizeof(wc.sta.password));
+        esp_wifi_set_config(WIFI_IF_STA, &wc);
+        ESP_LOGI(TAG, "扫描未命中，直连第一组: %s", net->ssid);
+        return true;
+    }
+    return false;
+}
+
 static void wifi_init_sta(void) {
     s_wifi_events = xEventGroupCreate();
-    ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
@@ -66,14 +120,34 @@ static void wifi_init_sta(void) {
                                                &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                &wifi_event_handler, NULL));
-    wifi_config_t wc = { 0 };
-    strlcpy((char *)wc.sta.ssid, WIFI_SSID, sizeof(wc.sta.ssid));
-    strlcpy((char *)wc.sta.password, WIFI_PASS, sizeof(wc.sta.password));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_start();
+
+    wifi_store_load();
+    if (wifi_connect_best()) {
+        esp_wifi_connect();
+    } else {
+        ESP_LOGI(TAG, "无已存 Wi-Fi，进入配网模式");
+        xTaskCreate(wifi_prov_task, "wifi_prov", 4096, NULL, 3, NULL);
+        return;
+    }
     xEventGroupWaitBits(s_wifi_events, WIFI_BIT_GOT_IP,
                         pdFALSE, pdTRUE, portMAX_DELAY);
+}
+// ==========================================================================
+// 软 AP 配网任务
+// ==========================================================================
+static void wifi_prov_task(void *arg) {
+    (void)arg;
+    if (wifi_prov_active()) { vTaskDelete(NULL); return; }
+    wifi_prov_start();
+    // 通知 UI 显示配网页（QR + 说明 + 配网码）
+    ui_msg_t m = { 0 };
+    m.kind = UI_MSG_PROVISION;
+    wifi_prov_ap_ssid(m.title, sizeof(m.title));
+    wifi_prov_pin(m.detail, sizeof(m.detail));
+    approval_ui_post(&m);
+    vTaskDelete(NULL);
 }
 
 // ==========================================================================
@@ -231,11 +305,24 @@ static void net_task(void *arg) {
                                      || strcmp(type, "settings") == 0
                                      || strcmp(type, "cancel") == 0)) {
                             post_msg(root, type);
+                        } else if (type && strcmp(type, "time") == 0) {
+                            // 桥对时：配对即自动校准，不依赖外网 SNTP
+                            cJSON *epoch = cJSON_GetObjectItem(root, "epoch");
+                            if (epoch && epoch->valueint > 1600000000) {
+                                struct timeval tv = { .tv_sec = epoch->valueint, 0 };
+                                settimeofday(&tv, NULL);
+                                ESP_LOGI(TAG, "时钟已按桥校准");
+                            }
                         } else if (type && strcmp(type, "welcome") == 0) {
                             ui_msg_t m = { 0 };
                             m.kind = UI_MSG_STATUS;
                             strlcpy(m.title, "up", sizeof(m.title));
                             approval_ui_post(&m);
+                            cJSON *epoch = cJSON_GetObjectItem(root, "epoch");
+                            if (epoch && epoch->valueint > 1600000000) {
+                                struct timeval tv = { .tv_sec = epoch->valueint, 0 };
+                                settimeofday(&tv, NULL);
+                            }
                             send_line(sock, "{\"type\":\"status\"}");
                         } else if (type && strcmp(type, "status") == 0) {
                             // 推送健康：title="up N"，detail=待决行（| 分隔）
@@ -262,7 +349,27 @@ static void net_task(void *arg) {
                                 strlcat(m.detail, line, sizeof(m.detail));
                                 n++;
                             }
-                            (void)pend;
+                            cJSON *epoch = cJSON_GetObjectItem(root, "epoch");
+                            if (epoch && epoch->valueint > 1600000000) {
+                                struct timeval tv = { .tv_sec = epoch->valueint, 0 };
+                                settimeofday(&tv, NULL);
+                            }
+                            // adapters: {"codex":true,...} → detail "codex=1|..."
+                            cJSON *ad = cJSON_GetObjectItem(root, "adapters");
+                            if (ad) {
+                                char det[96];
+                                det[0] = 0;
+                                cJSON *a;
+                                int n = 0;
+                                cJSON_ArrayForEach(a, ad) {
+                                    if (n) strlcat(det, "|", sizeof(det));
+                                    strlcat(det, a->string, sizeof(det));
+                                    strlcat(det, cJSON_IsTrue(a) ? "=1" : "=0",
+                                            sizeof(det));
+                                    if (++n >= 4) break;
+                                }
+                                strlcpy(m.detail, det, sizeof(m.detail));
+                            }
                             approval_ui_post(&m);
                         } else if (type && strcmp(type, "ping") == 0) {
                             send_line(sock, "{\"type\":\"pong\"}");
@@ -317,6 +424,7 @@ static void ui_pump_timer(lv_timer_t *t) {
 
 void app_main(void) {
     ESP_LOGI(TAG, "Approval Remote 看板版启动");
+    ESP_ERROR_CHECK(nvs_flash_init());
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
         ESP_LOGE(TAG, "显示初始化失败");
         return;

@@ -19,6 +19,7 @@
 #include "lvgl.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "libs/qrcode/lv_qrcode.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -26,6 +27,7 @@
 static const char *TAG = "approval_ui";
 
 LV_FONT_DECLARE(app_font_16);
+LV_FONT_DECLARE(lv_font_montserrat_14);
 
 // ---- 双主题调色板 ----
 typedef struct {
@@ -53,7 +55,7 @@ static char s_quiet_start[6] = "23:00";          // 免打扰开始
 static char s_quiet_end[6] = "07:00";            // 免打扰结束
 
 // ---- 状态 ----
-typedef enum { PG_HOME, PG_MENU, PG_ACTIVITY, PG_USAGE, PG_PUSH, PG_SETTINGS, PG_ABOUT } page_t;
+typedef enum { PG_HOME, PG_MENU, PG_ACTIVITY, PG_USAGE, PG_PUSH, PG_PROV, PG_SETTINGS, PG_ABOUT } page_t;
 typedef enum { OV_NONE, OV_REQ_P1, OV_REQ_P2, OV_NOTIFY, OV_FLASH } overlay_t;
 
 static QueueHandle_t s_decision_q;
@@ -92,9 +94,15 @@ static int s_rssi = -100;
 
 // 覆盖层当前请求
 static char s_req_id[24], s_req_agent[16], s_req_title[64], s_req_detail[160];
+static char s_prov_ap[33];            // 配网热点名
+static char s_prov_pin[5];            // 配网码
 static char s_health_line[96];        // "up 1" / "down 0"
 static char s_health_pending[3][64];  // 待决推送摘要（最多展示 3 行）
 static int s_health_pend_n;
+// Agent 在线状态（桥侧适配器连接即"已连接"）
+#define AGENT_MAX 4
+static struct { char name[16]; bool active; } s_agents[AGENT_MAX];
+static int s_agent_n;
 static int64_t s_notify_until_us;
 
 // ---- 对象 ----
@@ -118,6 +126,7 @@ static int64_t s_flash_next_us;
 static const char *const WDAY_CN[7] =
     { "周日", "周一", "周二", "周三", "周四", "周五", "周六" };
 
+static void (*s_prov_cb)(void);
 static void show_home(void);
 static void show_menu(void);
 static void show_push_page(void);
@@ -489,8 +498,8 @@ static void show_home(void) {
 // 菜单（灰底 + 白卡片）
 // ======================================================================
 static const char *const MENU_ITEMS[] =
-    { "推送", "用量与额度", "设置", "关于" };
-#define MENU_COUNT 4
+    { "推送", "用量与额度", "设置", "配网", "关于" };
+#define MENU_COUNT 5
 static lv_obj_t *menu_list;
 
 static void menu_refresh(void) {
@@ -552,6 +561,30 @@ static void show_push_page(void) {
                               0, 28, 184);
     lv_label_set_text(v1, s_health_line[0] ? s_health_line : "未知");
 
+    // Agent 在线状态行
+    lv_obj_t *cardA = make_card(list, 208, 62);
+    lv_obj_set_style_pad_hor(cardA, 12, 0);
+    lv_obj_t *tA = make_label(cardA, &app_font_16, P->sub, 0, 8, 184);
+    lv_label_set_text(tA, "Agent 在线");
+    int shown = s_agent_n < 3 ? s_agent_n : 3;
+    if (shown == 0) {
+        lv_obj_t *v = make_label(cardA, &app_font_16, P->sub, 0, 30, 184);
+        lv_label_set_text(v, "暂无已绑定的 Agent");
+    }
+    for (int i = 0; i < shown; i++) {
+        lv_obj_t *dot = lv_obj_create(cardA);
+        style_reset(dot);
+        lv_obj_set_size(dot, 7, 7);
+        lv_obj_set_style_radius(dot, 4, 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(
+            s_agents[i].active ? P->allow : P->hair), 0);
+        lv_obj_set_pos(dot, 2, 16 + i * 14);
+        lv_obj_t *nm = make_label(cardA, &lv_font_montserrat_14,
+                                  s_agents[i].active ? P->ink : P->sub,
+                                  16, 12 + i * 14, 168);
+        lv_label_set_text(nm, s_agents[i].name);
+    }
     lv_obj_t *card2 = make_card(list, 208, 62);
     lv_obj_set_style_pad_hor(card2, 12, 0);
     lv_obj_t *t2 = make_label(card2, &app_font_16, P->sub, 0, 8, 184);
@@ -565,6 +598,33 @@ static void show_push_page(void) {
         lv_label_set_text(v2, s_health_pending[0]);
     }
     ui_footer("OK 返回");
+}
+
+
+// ======================================================================
+// 配网页（QR 加 Wi-Fi + 文字说明 + 配网码）
+// ======================================================================
+static void show_provision_page(void) {
+    s_page = PG_PROV;
+    open_page_container();
+
+    // QR：手机相机扫一扫直接加入热点
+    char wifi_uri[72];
+    snprintf(wifi_uri, sizeof(wifi_uri), "WIFI:T:nopass;S:%s;;", s_prov_ap);
+    lv_obj_t *qr = lv_qrcode_create(page_cont);
+    lv_qrcode_update(qr, wifi_uri, (uint32_t)strlen(wifi_uri));
+    lv_obj_set_size(qr, 100, 100);
+    lv_obj_set_pos(qr, 6, 4);
+    lv_qrcode_set_dark_color(qr, lv_color_hex(P->ink));
+    lv_qrcode_set_light_color(qr, lv_color_hex(P->panel));
+
+    // 右侧说明
+    lv_obj_t *t = make_label(page_cont, &app_font_16, P->body, 112, 8, 96);
+    lv_label_set_text_fmt(t, "扫码加入\n%s", s_prov_ap);
+    lv_obj_t *u = make_label(page_cont, &app_font_16, P->sub, 112, 66, 96);
+    lv_label_set_text_fmt(u, "浏览器打开\n192.168.4.1\n配网码: %s", s_prov_pin);
+
+    ui_footer("OK 退出配网");
 }
 
 // ======================================================================
@@ -946,9 +1006,14 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
                 case 0: show_push_page(); break;
                 case 1: show_usage_page(); break;
                 case 2: show_settings_page(); break;
-                case 3: show_about_page(); break;
+                case 3:
+                    if (s_prov_cb) s_prov_cb();
+                    break;
+                case 4: show_about_page(); break;
             }
         }
+    } else if (s_page == PG_PROV) {
+        if (btn == BSP_BTN_OK) esp_restart();   // 退出配网 → 重启正常连接
     } else if (s_page == PG_SETTINGS) {
         if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
             s_set_sel = (s_set_sel + 1) % SET_ROWS;
@@ -1025,10 +1090,33 @@ static void handle_msg(const ui_msg_t *m) {
                      m->quota_n, m->timeout_s, s_dark, s_notify_ttl);
             break;
         }
+        case UI_MSG_PROVISION:
+            strlcpy(s_prov_ap, m->title, sizeof(s_prov_ap));
+            strlcpy(s_prov_pin, m->detail, sizeof(s_prov_pin));
+            show_provision_page();
+            break;
         case UI_MSG_HEALTH: {
             // title = "up 1"；detail = 待决行（| 分隔）
             strlcpy(s_health_line, m->title, sizeof(s_health_line));
             s_health_pend_n = 0;
+            // 解析 "codex=1|zcode=0|..." 到 Agent 在线表
+            s_agent_n = 0;
+            {
+                char tmp2[96];
+                strlcpy(tmp2, m->detail, sizeof(tmp2));
+                char *seg = strtok(tmp2, "|");
+                while (seg && s_agent_n < AGENT_MAX) {
+                    char *eq = strchr(seg, '=');
+                    if (eq) {
+                        *eq = 0;
+                        strlcpy(s_agents[s_agent_n].name, seg,
+                                sizeof(s_agents[0].name));
+                        s_agents[s_agent_n].active = eq[1] == '1';
+                        s_agent_n++;
+                    }
+                    seg = strtok(NULL, "|");
+                }
+            }
             char tmp[160];
             strlcpy(tmp, m->detail, sizeof(tmp));
             char *seg = strtok(tmp, "|");
@@ -1067,6 +1155,10 @@ void approval_ui_build_all(void) {
     refresh_time();
     refresh_battery();
     refresh_signal();
+}
+
+void approval_ui_set_provision_cb(void (*fn)(void)) {
+    s_prov_cb = fn;
 }
 
 void approval_ui_init(QueueHandle_t decision_out) {
