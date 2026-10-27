@@ -94,6 +94,7 @@ static int s_rssi = -100;
 
 // 覆盖层当前请求
 static char s_req_id[24], s_req_agent[16], s_req_title[64], s_req_detail[160];
+static bool s_unpaired;               // 从未配网：锁定桌面，只允许配网页
 static char s_prov_ap[33];            // 配网热点名
 static char s_prov_pin[5];            // 配网码
 static char s_health_line[96];        // "up 1" / "down 0"
@@ -984,6 +985,10 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
     }
     if (s_overlay == OV_FLASH) return;
 
+    if (ev == BSP_BTN_LONG && btn == BSP_BTN_OK && s_unpaired) {
+        esp_restart();   // 未配对：长按也只重试配网
+        return;
+    }
     if (ev == BSP_BTN_LONG && btn == BSP_BTN_OK) {
         if (s_page == PG_MENU) show_home();
         else if (s_page != PG_HOME) show_menu();
@@ -1013,7 +1018,8 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
             }
         }
     } else if (s_page == PG_PROV) {
-        if (btn == BSP_BTN_OK) esp_restart();   // 退出配网 → 重启正常连接
+        // 未配对：桌面不可进，按键只刷新配网页（重启重试）
+        esp_restart();
     } else if (s_page == PG_SETTINGS) {
         if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
             s_set_sel = (s_set_sel + 1) % SET_ROWS;
@@ -1193,6 +1199,13 @@ void approval_ui_init(QueueHandle_t decision_out) {
     apply_backlight();
     approval_ui_build_all();
     show_home();
+}
+
+void approval_ui_set_unpaired(bool unpaired) {
+    s_unpaired = unpaired;
+    if (unpaired && s_page == PG_HOME) {
+        show_provision_page();   // 直接停在配网页，不进桌面
+    }
 }
 
 void approval_ui_post(const ui_msg_t *msg) {

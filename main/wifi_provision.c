@@ -237,6 +237,9 @@ void wifi_prov_start(void) {
     // 先停掉 STA 模式（已启动状态下切模式 AP 不会广播），再切 APSTA
     esp_wifi_stop();
     esp_wifi_set_mode(WIFI_MODE_APSTA);
+    // 关键：创建 AP 网络接口（含 DHCP 服务器与 192.168.4.1 网关），
+    // 缺了它手机加入热点后拿不到 IP，192.168.4.1 永远打不开
+    esp_netif_create_default_wifi_ap();
     wifi_config_t ap = { 0 };
     strlcpy((char *)ap.ap.ssid, s_ap_ssid, sizeof(ap.ap.ssid));
     ap.ap.ssid_len = strlen(s_ap_ssid);
@@ -251,7 +254,8 @@ void wifi_prov_start(void) {
 
     // HTTP 服务（captive portal + API）
     httpd_config_t hc = HTTPD_DEFAULT_CONFIG();
-    hc.max_uri_handlers = 8;
+    hc.max_uri_handlers = 10;
+    hc.uri_match_fn = httpd_uri_match_wildcard;
     if (httpd_start(&s_http, &hc) == ESP_OK) {
         httpd_uri_t u;
         u.method = HTTP_GET;
@@ -278,6 +282,23 @@ void wifi_prov_start(void) {
         u.handler = h_redirect;
         httpd_register_uri_handler(s_http, &u);
         u.uri = "/connecttest.txt";
+        u.handler = h_redirect;
+        httpd_register_uri_handler(s_http, &u);
+        u.uri = "/ncsi.txt";
+        u.handler = h_redirect;
+        httpd_register_uri_handler(s_http, &u);
+        u.uri = "/captive.apple.com";
+        u.handler = h_redirect;
+        httpd_register_uri_handler(s_http, &u);
+        u.uri = "/connect";
+        u.handler = h_redirect;
+        httpd_register_uri_handler(s_http, &u);
+        u.uri = "/kindle-wifi/wifistub.html";
+        u.handler = h_redirect;
+        httpd_register_uri_handler(s_http, &u);
+        // 兜底：Android 探测路径带随机后缀（/generate_204_<uuid>）等，
+        // 通配符匹配后全部重定向到配网页
+        u.uri = "*";
         u.handler = h_redirect;
         httpd_register_uri_handler(s_http, &u);
     }

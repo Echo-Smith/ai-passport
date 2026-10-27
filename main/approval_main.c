@@ -127,9 +127,10 @@ static void wifi_init_sta(void) {
     if (wifi_connect_best()) {
         esp_wifi_connect();
     } else {
-        ESP_LOGI(TAG, "无已存 Wi-Fi，进入配网模式");
+        ESP_LOGI(TAG, "无已存 Wi-Fi，进入配网模式（锁定桌面直至配网完成）");
+        approval_ui_set_unpaired(true);
         xTaskCreate(wifi_prov_task, "wifi_prov", 4096, NULL, 3, NULL);
-        return;
+        return;   // 未配对：不启动网络任务，不进桌面
     }
     xEventGroupWaitBits(s_wifi_events, WIFI_BIT_GOT_IP,
                         pdFALSE, pdTRUE, portMAX_DELAY);

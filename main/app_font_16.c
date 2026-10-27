@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 16 px
  * Bpp: 4
- * Opts: --font assets/fonts/SourceHanSansSC-Regular.otf --range 0x20-0x7E --symbols Aegnt一三上下不与中主二于五京亮令件任低余作保停允光免入全六关决出分切到剩功加动北单号同后启周命器四回在处外存完定密屏已幕年应度开式弹待态息情意手打扫扰拒择按换据接推操数整新无日时显暂更月有期未机桥模止此步求活流浅浏消深源状玻理璃用电留的省知码硬确示秒等线绑络绝网置耗背自色菜观览解认许设访详请调起过返连退送选通部配释重量钟键长闭问间需页题额首（）· --size 16 --bpp 4 --format lvgl --no-compress --lv-font-name app_font_16 --lv-include lvgl.h -o main/app_font_16.c
+ * Opts: --font assets/fonts/SourceHanSansSC-Regular.otf --range 0x20-0x7E --symbols 一三上下不与中主二于五京亮令件任低余作保停允光免入全六关决出分切到剩功加动北单号同后启周命器四回在处外存完定密屏已幕年应度开式弹待态息情意手打扫扰拒择按换据接推操数整新无日时显暂更月有期未机桥模止此步求活流浅浏消深源状玻理璃用电留的省知码硬确示秒等线绑络绝网置耗背自色菜观览解认许设访详请调起过返连退送选通部配释重量钟键长闭问间需页题额首（）· --size 16 --bpp 4 --format lvgl --no-compress --lv-font-name app_font_16 --lv-include lvgl.h -o main/app_font_16.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
