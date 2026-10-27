@@ -61,3 +61,6 @@ void approval_ui_set_time(int hour, int minute, int wday, int month, int day);
 // Wi-Fi 信号注入（main 侧定时取 RSSI 后调用；<=-100 视为未知）
 void approval_ui_set_unpaired(bool unpaired);
 void approval_ui_set_rssi(int rssi_dbm);
+
+// 注册「重新配网」回调（设置页触发；main 侧起配网任务）
+void approval_ui_set_provision_cb(void (*fn)(void));

@@ -134,7 +134,7 @@ static void show_push_page(void);
 static void settings_cycle_dim(void);
 static uint8_t s_set_sel;
 static const char *const kOffTxt[4] = { "关闭", "30 秒", "60 秒", "120 秒" };
-#define SET_ROWS 3
+#define SET_ROWS 4
 static void approval_ui_build_all(void);
 
 // ======================================================================
@@ -499,8 +499,8 @@ static void show_home(void) {
 // 菜单（灰底 + 白卡片）
 // ======================================================================
 static const char *const MENU_ITEMS[] =
-    { "推送", "用量与额度", "设置", "配网", "关于" };
-#define MENU_COUNT 5
+    { "推送", "用量与额度", "设置", "关于" };
+#define MENU_COUNT 4
 static lv_obj_t *menu_list;
 
 static void menu_refresh(void) {
@@ -717,6 +717,15 @@ static void show_settings_page(void) {
                               s_set_sel == 2 ? P->accent : P->sub, 110, 19, 86);
     lv_obj_set_style_text_align(v2, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(v2, kOffTxt[s_off_idx]);
+    // 行 3：重新配网
+    lv_obj_t *r3 = make_card(page_cont, 208, 52);
+    lv_obj_set_style_pad_hor(r3, 12, 0);
+    if (s_set_sel == 3) {
+        lv_obj_set_style_bg_color(r3, lv_color_hex(P->sel_bg), 0);
+        lv_obj_set_style_border_color(r3, lv_color_hex(P->accent), 0);
+    }
+    lv_obj_t *t3 = make_label(r3, &app_font_16, P->ink, 0, 16, 184);
+    lv_label_set_text(t3, "重新配网");
     ui_footer("上下 选择 · OK 调整 · 长按返回");
 }
 
@@ -1010,10 +1019,7 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
                 case 0: show_push_page(); break;
                 case 1: show_usage_page(); break;
                 case 2: show_settings_page(); break;
-                case 3:
-                    if (s_prov_cb) s_prov_cb();
-                    break;
-                case 4: show_about_page(); break;
+                case 3: show_about_page(); break;
             }
         }
     } else if (s_page == PG_PROV) {
@@ -1026,7 +1032,8 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
         } else if (btn == BSP_BTN_OK) {
             if (s_set_sel == 0) settings_toggle_dark();
             else if (s_set_sel == 1) settings_cycle_dim();
-            else settings_cycle_off();
+            else if (s_set_sel == 2) settings_cycle_off();
+            else if (s_set_sel == 3 && s_prov_cb) s_prov_cb();
         }
     } else if (btn == BSP_BTN_OK) {
         show_menu();

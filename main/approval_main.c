@@ -35,6 +35,9 @@ static const char *TAG = "approval";
 
 static EventGroupHandle_t s_wifi_events;
 static void wifi_prov_task(void *arg);
+static void start_wifi_prov(void) {
+    xTaskCreate(wifi_prov_task, "wifi_prov", 4096, NULL, 3, NULL);
+}
 static bool wifi_connect_best(void);
 static QueueHandle_t s_decision_q;   // ui → net：审批决定
 
@@ -436,6 +439,7 @@ void app_main(void) {
     approval_ui_init(s_decision_q);
     lv_timer_create(ui_pump_timer, 100, NULL);
 
+    approval_ui_set_provision_cb(start_wifi_prov);
     ESP_ERROR_CHECK(bsp_button_init(on_key, NULL));
     (void)bsp_battery_init();   // 失败则电量显示 --%
 
