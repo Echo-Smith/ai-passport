@@ -440,7 +440,10 @@ void app_main(void) {
     (void)bsp_battery_init();   // 失败则电量显示 --%
 
     wifi_init_sta();
-    xTaskCreate(net_task, "approval_net", 6144, NULL, 4, NULL);
-    xTaskCreate(time_task, "approval_time", 3072, NULL, 3, NULL);
+    if (wifi_store_count() > 0) {
+        xTaskCreate(net_task, "approval_net", 6144, NULL, 4, NULL);
+        xTaskCreate(time_task, "approval_time", 3072, NULL, 3, NULL);
+    }
+    // 未配对：不跑网络任务（消除状态噪音），配网成功重启后自动接管
     ESP_LOGI(TAG, "装配完成");
 }

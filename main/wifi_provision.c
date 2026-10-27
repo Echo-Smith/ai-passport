@@ -155,18 +155,19 @@ static const char PAGE_FMT[] =
 "</script></body></html>";
 
 // ---------- HTTP 处理 ----------
+static char s_page_buf[4096];   // 静态：httpd 栈只有 4K，4KB 缓冲放栈上必溢出
+
 static esp_err_t h_root(httpd_req_t *req) {
-    char page[4096];
+    char *page = s_page_buf;
     // PAGE_FMT 含 CSS/JS，不可用 snprintf 格式化（% 会被误读）
     const char *tpl = PAGE_FMT;
     const char *ph = strstr(tpl, "%s");
-    int n = 0;
+    int n;
     if (ph) {
         int pre = (int)(ph - tpl);
-        n = snprintf(page, sizeof(page), "%.*s%s%s",
-                     pre, tpl, s_pin, ph + 2);
+        n = snprintf(page, 4096, "%.*s%s%s", pre, tpl, s_pin, ph + 2);
     } else {
-        n = snprintf(page, sizeof(page), "%s", tpl);
+        n = snprintf(page, 4096, "%s", tpl);
     }
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_send(req, page, n);
@@ -180,8 +181,11 @@ static esp_err_t h_scan(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static char s_save_buf[256];
+
 static esp_err_t h_save(httpd_req_t *req) {
-    char buf[256] = {0};
+    char *buf = s_save_buf;
+    memset(buf, 0, sizeof(s_save_buf));
     int n = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (n <= 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body");
@@ -255,6 +259,7 @@ void wifi_prov_start(void) {
     // HTTP 服务（captive portal + API）
     httpd_config_t hc = HTTPD_DEFAULT_CONFIG();
     hc.max_uri_handlers = 12;
+    hc.stack_size = 8192;                 // 默认 4K 放不下配网页渲染
     hc.uri_match_fn = httpd_uri_match_wildcard;
     if (httpd_start(&s_http, &hc) == ESP_OK) {
         httpd_uri_t u;

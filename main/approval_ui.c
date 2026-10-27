@@ -965,6 +965,9 @@ static void usage_apply(const ui_msg_t *m) {
 static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
     if (ev == BSP_BTN_RELEASE) return;
 
+    // 未配对：锁定配网页，忽略一切按键（桌面不可进）
+    if (s_unpaired) return;
+
     if (s_overlay == OV_REQ_P1 || s_overlay == OV_REQ_P2) {
         if (ev == BSP_BTN_LONG && btn == BSP_BTN_OK) {
             emit_decision(false);   // 长按 OK = 拒绝
@@ -985,10 +988,6 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
     }
     if (s_overlay == OV_FLASH) return;
 
-    if (ev == BSP_BTN_LONG && btn == BSP_BTN_OK && s_unpaired) {
-        esp_restart();   // 未配对：长按也只重试配网
-        return;
-    }
     if (ev == BSP_BTN_LONG && btn == BSP_BTN_OK) {
         if (s_page == PG_MENU) show_home();
         else if (s_page != PG_HOME) show_menu();
@@ -1018,8 +1017,8 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
             }
         }
     } else if (s_page == PG_PROV) {
-        // 未配对：桌面不可进，按键只刷新配网页（重启重试）
-        esp_restart();
+        // 已配对设备重进配网：OK 重启回到正常连接
+        if (btn == BSP_BTN_OK) esp_restart();
     } else if (s_page == PG_SETTINGS) {
         if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
             s_set_sel = (s_set_sel + 1) % SET_ROWS;
