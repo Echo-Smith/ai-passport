@@ -94,10 +94,8 @@ static const char PAGE_FMT[] =
 "<div class=s>选择 Wi-Fi 并输入密码，保存后设备将自动连接。</div>"
 "<div class=p><label>Wi-Fi 网络</label><select id=ssid></select>"
 "<label>密码</label><input id=pass type=password>"
-"<label>配网码（设备屏幕显示）</label><input id=pin type=text maxlength=4>"
 "<button onclick=doSave()>保存并连接</button>"
 "<div id=msg style='color:#c5221f;font-size:13px;margin-top:8px'></div></div>"
-"<div class=s>配网码：<span class=pin>%s</span></div>"
 "</div><script>"
 "fetch('/scan').then(r=>r.json()).then(l=>{"
 "const s=document.getElementById('ssid');"
@@ -108,10 +106,9 @@ static const char PAGE_FMT[] =
 "function doSave(){"
 "const ssid=document.getElementById('ssid').value;"
 "const pass=document.getElementById('pass').value;"
-"const pin=document.getElementById('pin').value;"
 "if(!ssid){msg.textContent='请选择网络';return}"
 "fetch('/save',{method:'POST',headers:{'content-type':'application/json'},"
-"body:JSON.stringify({ssid,pass,pin})})"
+"body:JSON.stringify({ssid,pass})})"
 ".then(r=>r.json()).then(j=>{"
 "if(j.ok){document.getElementById('msg').style.color='#1e8e3e';"
 "document.getElementById('msg').textContent='已保存，设备重启连接中…';"
@@ -136,6 +133,7 @@ static esp_err_t h_root(httpd_req_t *req) {
         n = snprintf(page, 4096, "%s", tpl);
     }
     httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_send(req, page, n);
     return ESP_OK;
 }
@@ -147,18 +145,25 @@ static esp_err_t h_scan(httpd_req_t *req) {
     return ESP_OK;
 }
 
-static char s_save_buf[256];
+static char s_save_buf[512];
 
 static esp_err_t h_save(httpd_req_t *req) {
     char *buf = s_save_buf;
     memset(buf, 0, sizeof(s_save_buf));
-    int n = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (n <= 0) {
+    // 循环收满整个 body（TCP 可能分段，单次 recv 不保证完整）
+    size_t total = 0;
+    int n;
+    while (total < sizeof(s_save_buf) - 1) {
+        n = httpd_req_recv(req, buf + total, sizeof(s_save_buf) - 1 - total);
+        if (n <= 0) break;
+        total += n;
+    }
+    if (total <= 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body");
         return ESP_OK;
     }
-    buf[n] = 0;
-    ESP_LOGI(TAG, "save 原文: %s", buf);
+    buf[total] = 0;
+    ESP_LOGI(TAG, "save 原文(%d): %s", (int)total, buf);
     cJSON *root = cJSON_Parse(buf);
     if (!root) {
         httpd_resp_set_type(req, "application/json");
