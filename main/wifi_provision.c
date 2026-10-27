@@ -15,6 +15,8 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_http_server.h"
+#include "dns_server.h"
+#include "cJSON.h"
 #include "esp_mac.h"
 #include "lwip/sockets.h"
 #include "nvs_flash.h"
@@ -45,42 +47,6 @@ void wifi_prov_pin(char *buf, size_t n) {
 }
 
 bool wifi_prov_active(void) { return s_active; }
-
-// ---------- 极简 DNS 劫持：所有 A 查询 → 192.168.4.1 ----------
-static void dns_task(void *arg) {
-    (void)arg;
-    s_dns_sock = socket(AF_INET, SOCK_DGRAM, 0);
-    struct sockaddr_in addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(53),
-        .sin_addr.s_addr = htonl(INADDR_ANY),
-    };
-    bind(s_dns_sock, (struct sockaddr *)&addr, sizeof(addr));
-    uint8_t buf[512];
-    for (;;) {
-        struct sockaddr_in from;
-        socklen_t flen = sizeof(from);
-        int n = recvfrom(s_dns_sock, buf, sizeof(buf), 0,
-                         (struct sockaddr *)&from, &flen);
-        if (n < 12) continue;
-        // 只处理标准查询（QR=0, OPCODE=0, QDCOUNT=1）
-        if ((buf[2] & 0x80) || (buf[2] & 0x78) != 0 || buf[5] != 1) continue;
-        // 复制问题段到应答
-        int qlen = n - 12;
-        uint8_t resp[512];
-        memcpy(resp, buf, n);
-        resp[2] |= 0x80;                 // QR=1（响应）
-        resp[3] = (resp[3] & 0xF0) | 0;  // RCODE=0
-        resp[6] = 0; resp[7] = 1;        // ANCOUNT=1
-        // A 记录：Name(指针 0xC00C) Type=1 Class=1 TTL=60 RDLength=4 RData=IP
-        uint8_t rr[] = {0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01,
-                        0x00, 0x00, 0x00, 0x3C, 0x00, 0x04,
-                        192, 168, 4, 1};
-        memcpy(resp + n, rr, sizeof(rr));
-        sendto(s_dns_sock, resp, n + sizeof(rr), 0,
-               (struct sockaddr *)&from, flen);
-    }
-}
 
 // ---------- 扫描列表 ----------
 static char s_scan_json[1024];
@@ -192,19 +158,20 @@ static esp_err_t h_save(httpd_req_t *req) {
         return ESP_OK;
     }
     buf[n] = 0;
-    // 极简解析（避免引入 cJSON 到配网关键路径）
+    ESP_LOGI(TAG, "save 原文: %s", buf);
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"请求格式错误\"}");
+        return ESP_OK;
+    }
     char ssid[33] = {0}, pass[64] = {0};
-    const char *p;
-    if ((p = strstr(buf, "\"ssid\":\""))) {
-        p += 7;
-        int i = 0;
-        while (*p && *p != '"' && i < 32) ssid[i++] = *p++;
-    }
-    if ((p = strstr(buf, "\"pass\":\""))) {
-        p += 7;
-        int i = 0;
-        while (*p && *p != '"' && i < 63) pass[i++] = *p++;
-    }
+    const char *p = cJSON_GetStringValue(cJSON_GetObjectItem(root, "ssid"));
+    const char *q = cJSON_GetStringValue(cJSON_GetObjectItem(root, "pass"));
+    strlcpy(ssid, p ? p : "", sizeof(ssid));
+    strlcpy(pass, q ? q : "", sizeof(pass));
+    cJSON_Delete(root);
+    ESP_LOGI(TAG, "配网请求: ssid='%s' pass_len=%d", ssid, (int)strlen(pass));
     if (!ssid[0]) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"缺少 SSID\"}");
@@ -220,9 +187,11 @@ static esp_err_t h_save(httpd_req_t *req) {
 }
 
 static esp_err_t h_redirect(httpd_req_t *req) {
-    httpd_resp_set_status(req, "302 Found");
+    // 官方范例要点：303 + 响应体——iOS 识别 captive portal 需要内容，空体不弹窗
+    httpd_resp_set_status(req, "303 See Other");
     httpd_resp_set_hdr(req, "Location", "/");
-    httpd_resp_send(req, NULL, 0);
+    httpd_resp_send(req, "Redirect to the captive portal",
+                    HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
@@ -248,8 +217,10 @@ void wifi_prov_start(void) {
     esp_wifi_set_config(WIFI_IF_AP, &ap);
     esp_wifi_start();
 
-    // DNS 劫持任务
-    xTaskCreate(dns_task, "prov_dns", 3072, NULL, 3, NULL);
+
+    // 官方 dns_server 组件：所有 A 查询解析到软 AP IP
+    dns_server_config_t dns_cfg = DNS_SERVER_CONFIG_SINGLE("*" /* all A queries */, "WIFI_AP_DEF" /* softAP netif ID */);
+    start_dns_server(&dns_cfg);
 
     // HTTP 服务（captive portal + API）
     httpd_config_t hc = HTTPD_DEFAULT_CONFIG();
