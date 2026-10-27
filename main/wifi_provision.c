@@ -254,7 +254,7 @@ void wifi_prov_start(void) {
 
     // HTTP 服务（captive portal + API）
     httpd_config_t hc = HTTPD_DEFAULT_CONFIG();
-    hc.max_uri_handlers = 10;
+    hc.max_uri_handlers = 12;
     hc.uri_match_fn = httpd_uri_match_wildcard;
     if (httpd_start(&s_http, &hc) == ESP_OK) {
         httpd_uri_t u;
