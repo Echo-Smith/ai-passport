@@ -103,7 +103,7 @@ export IDF_COMPONENT_STORAGE_URL=https://components-file.espressif.cn  # Managed
 ```
 
 - 模拟器覆盖不了的：电量计（Battery [FAIL] 属预期）、BLE、真实配网、低功耗时序、手感。
-- 真机烧录：`python -m esptool --chip esp32c3 -p <port> -b 460800 write-flash 0x0 build/FoloToy-AI-Passport-full.bin`；烧前须用户同意；合并镜像可能重置 NVS（保数据用分段 `idf.py flash`）。
+- 真机烧录（2026-10-28 实测红线）：**日常更新一律只烧 app 分区** `python -m esptool --chip esp32c3 -p <port> -b 460800 write_flash 0x10000 build/FoloToy-AI-Passport.bin`。整镜像 `write_flash 0x0 <merged.bin>` 会把 merge_bin 补丁空隙（nvs@0x9000、phy@0xf000）写成 0xFF——**必然抹掉已配网 Wi-Fi 与全部 NVS**（非"可能"）；仅 bootloader/分区表变更时才整镜像烧，且烧前先备份 `read_flash 0x9000 0x6000 nvs.bin`。烧前须用户同意。误抹后的恢复：NVS 空时开机自动从 `~/.config/passport/wifi_cred.h`（真实凭证 CHAGEE-BKEST）补种并直连 hub——所以构建时勿传占位 WIFI_SSID env，否则假网络会被种进存储（每次开机先空转 ~13s）。
 - 分支约定：每个应用从最新 main 拉 `feature/<name>`；交付前跑完整 `./tools/validate.sh` 并按 Build/Host tests/Device tests 分行汇报。
 
 ### 4.2 模拟器操作要点
