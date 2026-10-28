@@ -48,6 +48,7 @@ static bool s_dark;
 static uint8_t s_dim_idx = 2;        // 40/60/80/100
 static uint8_t s_off_idx = 2;        // 息屏：0 关 / 1=30s / 2=60s / 3=120s
 static bool s_screen_off;
+static bool s_wake_swallow;          // 唤醒的那次按压吞到 RELEASE 为止
 static int64_t s_last_activity_us;
 static const uint16_t kOffSeconds[4] = { 0, 30, 60, 120 };
 static uint8_t s_notify_ttl = 5;                 // 网页可调的通知停留秒数
@@ -131,7 +132,7 @@ static void (*s_prov_cb)(void);
 static void show_home(void);
 static void show_menu(void);
 static void show_push_page(void);
-static void settings_adjust(int dir);
+static void settings_adjust(void);
 static uint8_t s_set_sel;
 static const char *const kOffTxt[4] = { "关", "30s", "60s", "120s" };
 #define SET_ROWS 4
@@ -437,7 +438,7 @@ static void show_menu(void) {
     lv_obj_set_flex_flow(menu_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(menu_list, 8, 0);
     menu_refresh();
-    ui_footer("长按 打开 · OK 返回");
+    ui_footer("OK 返回 · 长按OK 打开");
 }
 
 // ======================================================================
@@ -503,34 +504,44 @@ static void show_push_page(void) {
 
 
 // ======================================================================
-// 配网页（QR 加 Wi-Fi + 文字说明 + 配网码）
+// 配网页（大二维码主视觉 + 下方访问地址）
 // ======================================================================
 static void show_provision_page(void) {
     s_page = PG_PROV;
     open_page_container();
 
-    // QR：手机相机扫一扫直接加入热点
+    // QR：主视觉，水平居中
     char wifi_uri[72];
     snprintf(wifi_uri, sizeof(wifi_uri), "WIFI:T:nopass;S:%s;;", s_prov_ap);
     lv_obj_t *qr = lv_qrcode_create(page_cont);
     lv_qrcode_update(qr, wifi_uri, (uint32_t)strlen(wifi_uri));
-    lv_obj_set_size(qr, 100, 100);
-    lv_obj_set_pos(qr, 6, 4);
+    lv_obj_set_size(qr, 136, 136);
+    lv_obj_align(qr, LV_ALIGN_TOP_MID, 0, 2);
     lv_qrcode_set_dark_color(qr, lv_color_hex(P->ink));
     lv_qrcode_set_light_color(qr, lv_color_hex(P->panel));
 
-    // 右侧说明
-    lv_obj_t *t = make_label(page_cont, &app_font_16, P->body, 112, 8, 96);
-    lv_label_set_text_fmt(t, "扫码加入\n%s", s_prov_ap);
-    lv_obj_t *u = make_label(page_cont, &app_font_16, P->sub, 112, 66, 96);
-    lv_label_set_text_fmt(u, "浏览器打开\n192.168.4.1\n配网码: %s", s_prov_pin);
+    lv_obj_t *t = make_label(page_cont, &app_font_16, P->body, 0, 144, 208);
+    lv_obj_set_style_text_align(t, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text_fmt(t, "扫码加入 %s", s_prov_ap);
+    lv_obj_t *u = make_label(page_cont, &app_font_16, P->sub, 0, 166, 208);
+    lv_obj_set_style_text_align(u, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(u, "浏览器打开");
+    lv_obj_t *url = make_label(page_cont, &lv_font_montserrat_20,
+                               P->accent, 0, 186, 208);
+    lv_obj_set_style_text_align(url, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(url, "192.168.4.1");
+    lv_obj_t *pin = make_label(page_cont, &app_font_16, P->sub, 0, 212, 208);
+    lv_obj_set_style_text_align(pin, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text_fmt(pin, "配网码 %s", s_prov_pin);
 
     ui_footer("OK 退出配网");
 }
 
 // ======================================================================
-// 用量与额度页
+// 用量与额度页（可滚动；消耗/剩余用外置彩色小标签区分）
 // ======================================================================
+static lv_obj_t *s_usage_list;
+
 static void show_usage_page(void) {
     s_page = PG_USAGE;
     open_page_container();
@@ -540,32 +551,42 @@ static void show_usage_page(void) {
     lv_obj_set_pos(list, 0, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list, 8, 0);
+    s_usage_list = list;                 // 保存给按键滚动
     if (!s_usage_valid) {
         lv_obj_t *e = make_label(list, &app_font_16,
                                  P->sub, 4, 8, 196);
         lv_label_set_text(e, "暂无用量数据\n（Magpie 有流量后自动更新）");
     } else {
-        lv_obj_t *card = make_card(list, 208, 52);
+        // 外置标签：消耗（紫）
+        lv_obj_t *h1 = make_label(list, &app_font_16, 0x7C5CFF, 0, 0, 100);
+        lv_label_set_text(h1, "消耗");
+        lv_obj_t *card = make_card(list, 208, 56);
         lv_obj_set_style_pad_hor(card, 12, 0);
         lv_obj_t *t1 = make_label(card, &app_font_16,
                                   P->sub, 0, 6, 184);
         lv_label_set_text(t1, "7 日 tokens");
-        lv_obj_t *t2 = make_label(card, &lv_font_montserrat_20, P->ink, 0, 22, 184);
+        lv_obj_t *t2 = make_label(card, &lv_font_montserrat_20, P->ink, 0, 24, 184);
         lv_label_set_text(t2, s_usage_tokens);
-        // 首条 Total + 3 家明细（40px 行 ×4 与 52px 卡合计刚好占满 244px）
+        // 外置标签：剩余（绿）
+        lv_obj_t *h2 = make_label(list, &app_font_16, P->allow, 0, 0, 100);
+        lv_label_set_text(h2, "剩余");
+        // 首条 Total + 3 家明细；名字 112px 换行、数值右对齐 72px，
+        // 右缘正好贴内容区（不出屏）
         for (int i = 0; i < s_quota_n && i < UI_QUOTA_MAX; i++) {
-            lv_obj_t *qc = make_card(list, 208, 40);
+            lv_obj_t *qc = make_card(list, 208, 44);
             lv_obj_set_style_pad_hor(qc, 12, 0);
             lv_obj_t *qn = make_label(qc, &app_font_16,
-                                      i == 0 ? P->ink : P->body, 0, 12, 130);
+                                      i == 0 ? P->ink : P->body, 0, 4, 112);
+            lv_obj_set_style_text_align(qn, LV_TEXT_ALIGN_LEFT, 0);
             lv_label_set_text(qn, s_quotas[i].name);
             lv_obj_t *qv = make_label(qc, &app_font_16,
-                                      P->allow, 130, 12, 66);
+                                      P->allow, 112, 4, 72);
+            lv_label_set_long_mode(qv, LV_LABEL_LONG_CLIP);
             lv_obj_set_style_text_align(qv, LV_TEXT_ALIGN_RIGHT, 0);
             lv_label_set_text(qv, s_quotas[i].left);
         }
     }
-    ui_footer("OK 返回");
+    ui_footer("OK 返回 · 上下 查看");
 }
 
 // ======================================================================
@@ -628,7 +649,7 @@ static void show_settings_page(void) {
     }
     lv_obj_t *t3 = make_label(r3, &app_font_16, P->ink, 0, 16, 184);
     lv_label_set_text(t3, "重新配网");
-    ui_footer("长按 调整 · OK 返回");
+    ui_footer("OK 返回 · 长按OK 调整");
 }
 
 static void settings_store_u8(const char *key, uint8_t v) {
@@ -662,12 +683,11 @@ static void settings_set_off(int idx) {
     show_settings_page();
 }
 
-// 长按上/下调整当前行：dir=-1 上一个值，+1 下一个值。
-// 行 3（重新配网）没有取值可循环，任一方向都直接触发。
-static void settings_adjust(int dir) {
+// OK 长按调整当前行：值 +1 循环。行 3（重新配网）直接触发。
+static void settings_adjust(void) {
     if (s_set_sel == 0) settings_toggle_dark();
-    else if (s_set_sel == 1) settings_set_dim(s_dim_idx + dir);
-    else if (s_set_sel == 2) settings_set_off(s_off_idx + dir);
+    else if (s_set_sel == 1) settings_set_dim(s_dim_idx + 1);
+    else if (s_set_sel == 2) settings_set_off(s_off_idx + 1);
     else if (s_set_sel == 3 && s_prov_cb) s_prov_cb();
 }
 
@@ -698,6 +718,9 @@ static void show_about_page(void) {
 // ======================================================================
 static void build_overlay(void) {
     veil = lv_obj_create(scr);
+    // 不 reset 的话默认 pad 会把面板往右下推，弹窗看起来压着屏幕右缘
+    style_reset(veil);
+    lv_obj_clear_flag(veil, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_pos(veil, 0, 0);
     lv_obj_set_size(veil, 240, 320);
     lv_obj_set_style_bg_color(veil, lv_color_hex(P->veil), 0);
@@ -735,6 +758,8 @@ static void overlay_brightness(bool boost) {
 
 static void overlay_show(bool show) {
     if (show) {
+        // 息屏中弹窗到达：先恢复背光，否则绘制停在息屏态且首键会被吞
+        screen_off_exit();
         // 运行时创建的页面卡片会盖住弹窗——显示前把蒙层与提示条提到最顶
         lv_obj_move_foreground(veil);
         if (footer_label) lv_obj_move_foreground(footer_label);
@@ -876,16 +901,17 @@ static void usage_apply(const ui_msg_t *m) {
 // ======================================================================
 // 按键
 // ----------------------------------------------------------------------
-// 交互模型：
-//   主屏      任意键单击进菜单（上/下按下瞬间即进，OK 单击进）
-//   菜单/设置 上/下「按下」立即移动高亮；「长按上/下」对按下前高亮的项执行
-//             （菜单=打开该页，设置=调整该行取值）；OK 单击返回上一级
-//   审批弹窗  保持专用流程：OK 单击翻页/允许，长按 OK 拒绝，上下翻页
-// 灵敏度：单击判定要等松开后 short_press 窗口，选择类操作故走 PRESS 事件
-// （约 15ms 即响应），长按 500ms 触发；体感明显快于旧的 CLICK 路径。
+// 交互模型（v0.6）：移动与提交物理分离，杜绝同键时间歧义。
+//   上/下     纯导航：按下瞬间移动高亮（菜单/设置），用量页滚动
+//   OK 单击   返回语义：主屏进菜单，菜单回主屏，子页回菜单
+//   OK 长按   提交语义：菜单=打开选中项，设置=调整选中行（值 +1 循环）
+//   审批弹窗  专用流程不变：OK 单击翻页/允许，长按 OK 拒绝
+// 交互学依据：① 一致性——OK 在全部上下文都是"行动键"（审批允许/进入/
+//   调整），上下永远只改选择，肌肉记忆零冲突；② 上一版长按上/下提交会
+//   先触发导航再触发提交（同键时间歧义），即"长按和上下打架"；现在时间
+//   歧义只剩 OK 的单击/长按，且两者语义同向（轻=返回，重=进入），误操作
+//   代价低；③ 按下即响应（~15ms），无单击判定窗口延迟。
 // ======================================================================
-static int8_t s_press_sel = -1;   // 本次按下前的高亮；-1 = 无进行中的上下选择
-
 static void menu_open_selected(void) {
     switch (s_menu_sel) {
         case 0: show_push_page(); break;
@@ -893,6 +919,14 @@ static void menu_open_selected(void) {
         case 2: show_settings_page(); break;
         case 3: show_about_page(); break;
     }
+}
+
+// 按当前页恢复页脚（通知条关闭后调用）
+static void footer_for_page(void) {
+    if (s_page == PG_HOME) ui_footer("按任意键进菜单");
+    else if (s_page == PG_MENU) ui_footer("OK 返回 · 长按OK 打开");
+    else if (s_page == PG_SETTINGS) ui_footer("OK 返回 · 长按OK 调整");
+    else ui_footer("OK 返回");
 }
 
 static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
@@ -916,13 +950,13 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
     if (s_overlay == OV_NOTIFY) {
         if (ev == BSP_BTN_CLICK) {
             overlay_show(false);
-            ui_footer(s_page == PG_HOME ? "按任意键进菜单" : "OK 返回");
+            footer_for_page();
         }
         return;   // 通知条其余按键不响应（等待 TTL 自动消失）
     }
     if (s_overlay != OV_NONE) return;   // OV_FLASH：闪烁期间不响应
 
-    // 主屏：任意键进菜单。上/下走 PRESS（瞬时），OK 走 CLICK
+    // 主屏：任意键单击进菜单（上/下走 PRESS 瞬时，OK 走 CLICK）
     if (s_page == PG_HOME) {
         if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
             show_menu();
@@ -934,38 +968,39 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
         return;
     }
 
-    // 菜单/设置：上/下按下即移动高亮，长按执行按下前的项
-    if ((s_page == PG_MENU || s_page == PG_SETTINGS) &&
-        (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN)) {
-        if (ev == BSP_BTN_PRESS) {
-            int n = s_page == PG_MENU ? MENU_COUNT : SET_ROWS;
-            int cur = s_page == PG_MENU ? s_menu_sel : (int)s_set_sel;
-            s_press_sel = (int8_t)cur;
-            int next = (cur + (btn == BSP_BTN_DOWN ? 1 : n - 1)) % n;
-            if (s_page == PG_MENU) {
-                s_menu_sel = next;
-                menu_refresh();
-            } else {
-                s_set_sel = (uint8_t)next;
-                show_settings_page();
+    // 菜单/设置：上/下按下即移动高亮；OK 长按执行选中项；OK 单击返回
+    if (s_page == PG_MENU || s_page == PG_SETTINGS) {
+        if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
+            if (ev == BSP_BTN_PRESS) {
+                int n = s_page == PG_MENU ? MENU_COUNT : SET_ROWS;
+                int cur = s_page == PG_MENU ? s_menu_sel : (int)s_set_sel;
+                int next = (cur + (btn == BSP_BTN_DOWN ? 1 : n - 1)) % n;
+                if (s_page == PG_MENU) {
+                    s_menu_sel = next;
+                    menu_refresh();
+                } else {
+                    s_set_sel = (uint8_t)next;
+                    show_settings_page();
+                }
             }
-        } else if (ev == BSP_BTN_LONG) {
-            if (s_press_sel < 0) return;
-            if (s_page == PG_MENU) {
-                s_menu_sel = s_press_sel;   // 回到按下前高亮的项再打开
-                menu_open_selected();
-            } else {
-                s_set_sel = (uint8_t)s_press_sel;
-                settings_adjust(btn == BSP_BTN_DOWN ? +1 : -1);
-            }
-            s_press_sel = -1;
+            return;
         }
-        // CLICK：移动已在按下瞬间完成，不再重复处理
+        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+            if (s_page == PG_MENU) menu_open_selected();
+            else settings_adjust();
+            return;
+        }
+    }
+
+    // 用量页：上/下滚动查看
+    if (s_page == PG_USAGE && s_usage_list &&
+        (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) && ev == BSP_BTN_PRESS) {
+        lv_obj_scroll_by(s_usage_list, 0, btn == BSP_BTN_DOWN ? -70 : 70,
+                         LV_ANIM_ON);
         return;
     }
-    s_press_sel = -1;
 
-    // OK 单击：菜单回主屏；子页（推送/用量/设置/关于）回菜单；配网页重启
+    // OK 单击：返回（配网页重启回正常连接）
     if (ev == BSP_BTN_CLICK && btn == BSP_BTN_OK) {
         if (s_page == PG_PROV) esp_restart();
         else if (s_page == PG_MENU) show_home();
@@ -1164,7 +1199,15 @@ void approval_ui_pump(void) {
     while (s_msg_q && xQueueReceive(s_msg_q, &m, 0) == pdTRUE) handle_msg(&m);
     key_evt_t k;
     while (s_key_q && xQueueReceive(s_key_q, &k, 0) == pdTRUE) {
-        if (s_screen_off) { screen_off_exit(); continue; }   // 唤醒即吞键
+        if (s_screen_off) {
+            screen_off_exit();
+            s_wake_swallow = true;   // 首键只唤醒，整次按压不参与操作
+            continue;
+        }
+        if (s_wake_swallow) {
+            if (k.ev == BSP_BTN_RELEASE) s_wake_swallow = false;
+            continue;   // 唤醒按压的后续事件（CLICK/LONG）一并吞掉
+        }
         handle_key(k.btn, k.ev);
         s_last_activity_us = esp_timer_get_time();
     }
@@ -1174,7 +1217,7 @@ void approval_ui_pump(void) {
         && esp_timer_get_time() >= s_notify_until_us) {
         overlay_show(false);
         s_notify_until_us = 0;
-        ui_footer("OK 菜单");
+        footer_for_page();
     }
     int64_t now = esp_timer_get_time() / 1000000;
     if (now != last_sec) {
