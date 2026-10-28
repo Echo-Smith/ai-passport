@@ -442,7 +442,7 @@ void app_main(void) {
 
     s_decision_q = xQueueCreate(8, sizeof(ui_decision_t));
     approval_ui_init(s_decision_q);
-    lv_timer_create(ui_pump_timer, 100, NULL);
+    lv_timer_create(ui_pump_timer, 30, NULL);
 
     approval_ui_set_provision_cb(start_wifi_prov);
     ESP_ERROR_CHECK(bsp_button_init(on_key, NULL));

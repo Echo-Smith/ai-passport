@@ -19,7 +19,7 @@ typedef enum {
     UI_MSG_CANCEL,     // 清除覆盖层（桥取消/断线）
 } ui_msg_kind_t;
 
-#define UI_QUOTA_MAX 3
+#define UI_QUOTA_MAX 4   // Total + 3 家明细
 
 typedef struct {
     ui_msg_kind_t kind;
