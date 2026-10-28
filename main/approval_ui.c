@@ -187,106 +187,8 @@ static lv_obj_t *make_footer_label(lv_obj_t *parent) {
 // ======================================================================
 // 喜鹊精灵（像素画 ×2；# 墨 W 白 A 蓝 . 透明）
 // ======================================================================
-static const char *const MAGPIE[] = {
-    "###....................#####....",
-    ".####................###########",
-    "######..............############",
-    "#######............##########...",
-    "########..........###########...",
-    "..#######..............#######..",
-    ".....#########........#.#######.",
-    "......######......#####..######.",
-    "........#############.......###.",
-    ".......############.............",
-    "......##########................",
-    "........#####...................",
-    "...........##...................",
-};
-static const char *const MAGPIE_B[] = {
-    "###....................#####....",
-    ".####................###########",
-    "######.............#############",
-    "#######...........###########...",
-    "########............##########..",
-    "..#######.............#########.",
-    ".....#########....#####.#######.",
-    "......######..#######....######.",
-    "........###########.........#...",
-    ".......#######..................",
-    "......##########................",
-    "........#####...................",
-    "...........##...................",
-};
-#define MAGPIE_W 32
-#define MAGPIE_H 13
-#define MP_SCALE 2
-static uint16_t magpie_buf[MAGPIE_W * MP_SCALE * MAGPIE_H * MP_SCALE];
-static lv_obj_t *magpie_cv;
-static bool s_wag_b;                 // 当前是否帧 B
-static int s_wag_left;               // 剩余切换次数
-static int64_t s_wag_next_us;
 
-static void magpie_draw(const char *const art[/*MAGPIE_H*/]) {
-    const int w = MAGPIE_W * MP_SCALE, h = MAGPIE_H * MP_SCALE;
-    lv_canvas_fill_bg(magpie_cv, lv_color_hex(P->ground), LV_OPA_COVER);
-    for (int ry = 0; ry < MAGPIE_H; ry++) {
-        for (int rx = 0; rx < MAGPIE_W; rx++) {
-            char c = art[ry][rx];
-            uint32_t col;
-            if (c == '#') col = P->ink;
-            else if (c == 'W' || c == 'E') col = 0xFFFFFF;
-            else if (c == 'A') col = P->accent;
-            else continue;
-            for (int dy = 0; dy < MP_SCALE; dy++)
-                for (int dx = 0; dx < MP_SCALE; dx++)
-                    lv_canvas_set_px(magpie_cv, rx * MP_SCALE + dx,
-                                     ry * MP_SCALE + dy, lv_color_hex(col),
-                                     LV_OPA_COVER);
-        }
-    }
-    lv_obj_invalidate(magpie_cv);
-}
 
-static void magpie_build(lv_obj_t *parent) {
-    magpie_cv = lv_canvas_create(parent);
-    const int w = MAGPIE_W * MP_SCALE, h = MAGPIE_H * MP_SCALE;
-    lv_canvas_set_buffer(magpie_cv, magpie_buf, w, h, LV_COLOR_FORMAT_RGB565);
-    magpie_draw(MAGPIE);
-    lv_obj_set_pos(magpie_cv, 6, 0);   // 首页左上
-}
-
-// 官网悬停式动效：轻微上下浮动 + 振翅，共 6 个 90ms 帧（约 0.55s）
-#define WAG_FRAMES 6
-static int s_wag_frame;
-static int s_wag_y0;
-
-static void magpie_wag(void) {
-    if (!magpie_cv) return;
-    s_wag_b = false;
-    s_wag_frame = 0;
-    s_wag_left = WAG_FRAMES;
-    s_wag_y0 = lv_obj_get_y(magpie_cv);
-    s_wag_next_us = esp_timer_get_time();
-}
-
-static void magpie_pump_wag(void) {
-    if (!s_wag_left || !magpie_cv) return;
-    int64_t now = esp_timer_get_time();
-    if (now < s_wag_next_us) return;
-    s_wag_next_us = now + 90 * 1000;
-    s_wag_left--;
-    s_wag_frame++;
-    // 浮动：0,-2,0,-2,0,0（上浮两格两次）
-    static const int dy[WAG_FRAMES] = { 0, -2, 0, -2, 0, 0 };
-    lv_obj_set_y(magpie_cv, s_wag_y0 + dy[s_wag_frame % WAG_FRAMES]);
-    // 振翅：帧 A/B 交替
-    s_wag_b = !s_wag_b;
-    magpie_draw(s_wag_b ? MAGPIE_B : MAGPIE);
-    if (!s_wag_left) {
-        lv_obj_set_y(magpie_cv, s_wag_y0);   // 回到原位
-        magpie_draw(MAGPIE);
-    }
-}
 
 // ======================================================================
 // 状态栏（全局）：时间左 / 信号+电量右
@@ -443,9 +345,8 @@ static void ui_footer(const char *text) {
 static void show_home(void) {
     s_page = PG_HOME;
     open_page_container();
-    magpie_build(page_cont);                       // 左上喜鹊
-    lbl_date = make_label(page_cont, &app_font_16, P->body, 108, 12, 100);
-    lv_obj_set_style_text_align(lbl_date, LV_TEXT_ALIGN_RIGHT, 0);
+    lbl_date = make_label(page_cont, &app_font_16, P->body, 0, 24, 208);
+    lv_obj_set_style_text_align(lbl_date, LV_TEXT_ALIGN_CENTER, 0);
     if (s_hour >= 0) {
         lv_label_set_text_fmt(lbl_date, "%s\n%d月%d日",
                               WDAY_CN[s_wday % 7], s_month, s_day);
@@ -492,7 +393,6 @@ static void show_home(void) {
     lv_obj_set_pos(bar_left, 0, 59);
 
     ui_footer("OK 菜单");
-    magpie_wag();                                  // 回到桌面挥翅
 }
 
 // ======================================================================
@@ -727,7 +627,7 @@ static void show_settings_page(void) {
     }
     lv_obj_t *t3 = make_label(r3, &app_font_16, P->ink, 0, 16, 184);
     lv_label_set_text(t3, "重新配网");
-    ui_footer("上下 选择 · OK 调整 · 长按返回");
+    ui_footer("上下 选择 · OK 调整");
 }
 
 static void settings_toggle_dark(void) {
@@ -1007,7 +907,6 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
 
     if (s_page == PG_HOME) {
         if (btn == BSP_BTN_OK) show_menu();
-        else magpie_wag();            // 闲按一下，它挥挥翅膀
     } else if (s_page == PG_MENU) {
         if (btn == BSP_BTN_UP) {
             s_menu_sel = (s_menu_sel + MENU_COUNT - 1) % MENU_COUNT;
@@ -1238,7 +1137,6 @@ void approval_ui_pump(void) {
     }
     if (s_screen_off) return;            // 息屏中不做任何绘制
     pump_flash();
-    magpie_pump_wag();
     if (s_overlay == OV_NOTIFY && s_notify_until_us
         && esp_timer_get_time() >= s_notify_until_us) {
         overlay_show(false);

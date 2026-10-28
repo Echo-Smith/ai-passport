@@ -127,6 +127,11 @@ static void wifi_init_sta(void) {
     esp_wifi_start();
 
     wifi_store_load();
+    // 存储为空时播种编译期默认凭证（模拟器=虚拟 AP；真机=保存文件里的网络），
+    // 保证首次开机即可直连；配网添加的网络进入同一存储，按 RSSI 择优。
+    if (wifi_store_count() == 0 && WIFI_SSID[0] != 0) {
+        wifi_store_add(WIFI_SSID, WIFI_PASS);
+    }
     if (wifi_connect_best()) {
         esp_wifi_connect();
     } else {

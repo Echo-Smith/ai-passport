@@ -1,7 +1,8 @@
-# 凭据来源（单一决策，避免增量构建残留旧头）：
-#   1) 四个环境变量都给了 → 用环境变量
-#   2) 否则 ~/.config/passport/wifi_cred.h 存在 → 整份复制
-#   3) 否则模拟器占位值
+# Wi-Fi 凭证头（wifi_cred_gen.h）在 configure 阶段从以下来源生成（按优先级）：
+#   1) 环境变量 WIFI_SSID/WIFI_PASS/BRIDGE_HOST/BRIDGE_TOKEN
+#      （改环境变量后需 idf.py reconfigure 才生效）
+#   2) 无环境变量时回退 ~/.config/passport/wifi_cred.h（本机保护文件，真机部署用）
+#   3) 均无时用模拟器占位值（Emulator Host Bridge，无 token）
 set(AP_WIFI_SSID "$ENV{WIFI_SSID}")
 set(AP_WIFI_PASS "$ENV{WIFI_PASS}")
 set(AP_BRIDGE_HOST "$ENV{BRIDGE_HOST}")
@@ -11,7 +12,6 @@ set(AP_SAVED_CRED "$ENV{HOME}/.config/passport/wifi_cred.h")
 
 if(NOT AP_WIFI_SSID STREQUAL "")
     set(AP_CRED_SRC "env")
-    # 每次都重写，保证与本次环境变量一致（增量构建不残留）
     file(WRITE "${AP_CRED_HEADER}"
 "#pragma once\n"
 "#define WIFI_SSID \"${AP_WIFI_SSID}\"\n"
@@ -34,9 +34,9 @@ else()
 endif()
 
 # 自检：token 为空时报错而不是静默发空 token
-file(READ "${AP_CRED_HEADER}" AP_CRED_CONTENT)
-if(AP_CRED_CONTENT MATCHES "BRIDGE_TOKEN \"\"")
-    message(FATAL_ERROR "approval: BRIDGE_TOKEN 为空（来源=${AP_CRED_SRC}）——检查环境变量或 ${AP_SAVED_CRED}")
+file(READ "${AP_CRED_HEADER}" AP_CRED_CHECK)
+if(AP_CRED_CHECK MATCHES "BRIDGE_TOKEN \"\"")
+    message(FATAL_ERROR "wifi_cred: BRIDGE_TOKEN 为空（来源=${AP_CRED_SRC}）")
 endif()
 message(STATUS "approval: credentials from ${AP_CRED_SRC}")
 
