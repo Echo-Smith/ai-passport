@@ -52,6 +52,8 @@ export IDF_COMPONENT_STORAGE_URL=https://components-file.espressif.cn  # Managed
 3. ccache 无 macos-arm64 官方包，未装（可选加速项）；dfu-util 未装（设备走 USB Serial/JTAG，用不到）。
 4. 本工作区安全 hook 会误判含 "install" 字样的 Bash 命令为写文件：用 Write 工具建透明包装脚本到 `/tmp` 再执行；git 提交用 `git commit -am` 避免路径触发。
 5. 浏览器（IAB）不支持文件选择器；>200KB 的单次 evaluate 参数会失败——模拟器固件上传用分块法（§4.2）。
+6. 系统 bash 是 **3.2**：`set -e` 对 if/elif 分支体内失败的 `[[ ]]` **不生效**（bash <4.1 行为）——安全校验必须显式 `|| { ...; exit 1; }`，不能依赖 set -e 兜底（PR #113 审查实录）。
+7. 仓库同时承载多条并行项目线（如 approval-remote）：动别的分支一律 `git worktree add <tmp> <branch>` 隔离操作，**不得**在他人工作区切分支；完事 `git worktree remove`。
 
 ---
 
@@ -143,6 +145,7 @@ export IDF_COMPONENT_STORAGE_URL=https://components-file.espressif.cn  # Managed
 | 音频-存储并发 | 有 BGM+保存需求才开 IRAM-safe，保存在安全边界 |
 | 中文 | 上 CJK 子集字体，真机验证字形 |
 | 资源持有策略 | 页面级确定性生命周期优先（进页初始化/出页整套释放，重栈永不同时驻留——继承基线 Wi-Fi/BLE 页模式）；缓存型内存才加 OOM 兜底：`heap_caps_register_failed_alloc_callback()` 失败回调释放缓存后自动重试，大块分配前用 `heap_caps_get_largest_free_block()` 预检；两本账分开管（LVGL 池 24KB 与系统堆 ~300KB 互不相通） |
+| 安全校验验证 | 校验/守卫类逻辑**必须实测失败路径**（喂坏输入看它是否真的拒绝），不能只测正向通过；把休眠分支提升为活跃路径时，先补该路径的对抗性测试（案例：PR #113 把 shasum 分支变成 macOS 主路径后，被维护者实测出 bash 3.2 set-e 下坏校验和静默通过） |
 
 ---
 
@@ -172,6 +175,6 @@ export IDF_COMPONENT_STORAGE_URL=https://components-file.espressif.cn  # Managed
 | 日期 | 决策 | 状态 |
 | --- | --- | --- |
 | 2026-10-23 | 圆角屏幕设计约束（只点亮圆角内区域，四角纯黑） | 已采纳，产品级约束 |
-| 2026-10-23 | macOS 门控修复提上游 PR #113 | 等待合并；本地分支已包含 |
+| 2026-10-23 | macOS 门控修复提上游 PR #113 | 审查通过并被选中合并（三个竞争 PR 中最干净）；按审查要求补了校验和不匹配显式失败（d9aa90f，bash 3.2 set-e 休眠 bug），等 CI 绿后合并 |
 | 2026-10-23 | AI 连接功能四方案论证 | **parked**，待用户定方向后从 §6.1 阶段 1 启动 |
 | 2026-10-23 | 本 harness 建立（feature/dev-harness 分支） | 生效 |

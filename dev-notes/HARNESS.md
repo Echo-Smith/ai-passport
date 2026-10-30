@@ -52,6 +52,8 @@ Simulator (see §4.2): `cd ~/Codex/AI-Passport/FoloToy-Passport-Simulator && npm
 3. ccache has no official macos-arm64 build (optional speedup, absent); dfu-util absent (the device uses USB Serial/JTAG).
 4. The workspace security hook misreads Bash commands containing "install" as file writes: route them through a transparent wrapper script created with the Write tool in `/tmp`; use `git commit -am` to avoid path-triggered false positives.
 5. The built-in browser (IAB) has no file chooser, and single evaluate calls fail above ~200 KB — use the chunked upload method for simulator firmware (§4.2).
+6. System bash is **3.2**: `set -e` does **not** act on a failing `[[ ]]` inside an if/elif body (bash <4.1 behavior) — security checks must fail explicitly via `|| { ...; exit 1; }`, never rely on set -e as the backstop (PR #113 review, first-hand).
+7. The repository carries parallel project streams (e.g. approval-remote): touch any other branch through an isolated `git worktree add <tmp> <branch>` — never switch branches in someone's active workspace; `git worktree remove` when done.
 
 ---
 
@@ -143,6 +145,7 @@ edit → ./tools/validate.sh --firmware (~90 s)
 | Audio-storage concurrency | enable IRAM-safe only with BGM+saves; save at safe boundaries |
 | Chinese | CJK subset font, verified on device |
 | Resource holding | page-scoped deterministic lifecycle first (init on enter, full release on exit; heavy stacks never co-resident — inherit the baseline Wi-Fi/BLE page pattern); add an OOM fallback only for cache-like memory: `heap_caps_register_failed_alloc_callback()` releases caches and the failed allocation retries automatically, and `heap_caps_get_largest_free_block()` gates large allocations; track the two pools separately (24 KB LVGL pool and ~300 KB system heap never borrow from each other) |
+| Checksum/guard verification | verification and guard logic **must be tested on its failure path** (feed bad input, confirm it actually refuses), never only the happy path; when promoting a dormant fallback branch to the active path, add adversarial tests for it first (case: PR #113 made the shasum branch the macOS main path, and the maintainer's zeroed-digest test exposed a silent pass under bash 3.2 set-e) |
 
 ---
 
@@ -172,6 +175,6 @@ Permanently unusable from firmware (no wiring + the chip has no host interface +
 | Date | Decision | Status |
 | --- | --- | --- |
 | 2026-10-23 | Rounded-screen design constraint (light only inside the rounded rect; corners stay black) | adopted, product-level constraint |
-| 2026-10-23 | macOS gate fix upstreamed as PR #113 | awaiting merge; local branches carry it |
+| 2026-10-23 | macOS gate fix upstreamed as PR #113 | approved for merge (picked as the cleanest of three competing macOS fixes); review-requested explicit checksum-mismatch failure added (d9aa90f, bash 3.2 set-e dormant bug) — merge once CI is green |
 | 2026-10-23 | AI-connectivity options argued (four routes) | **parked**; resume at §6.1 stage 1 once the user picks a direction |
 | 2026-10-23 | Harness established (feature/dev-harness branch) | in force |
