@@ -173,13 +173,13 @@ export IDF_COMPONENT_STORAGE_URL=https://components-file.espressif.cn  # Managed
 
 **已走通链路**（模拟器端到端验证 ✓）：
 ```
-Claude Code (--permission-prompt-tool) → MCP stdio → 桥(approval-bridge/bridge.py)
+Claude Code (--permission-prompt-tool) → MCP stdio → 桥(passport-gateway/bridge.py)
   → TCP 局域网(JSON 行协议, token 认证, 超时 fail-safe=deny)
   → 固件 feature/approval-remote (approval_main.c)
   → 审批屏: OK=allow / DOWN=deny → decision 回传
 ```
 
-- 桥：`~/Codex/AI-Passport/approval-bridge/bridge.py`（hub/mcp/send 三模式；hub 自测+设备联调通过）
+- 桥：`~/Codex/AI-Passport/passport-gateway/bridge.py`（hub/mcp/send 三模式；hub 自测+设备联调通过）
 - 固件：`feature/approval-remote` 分支，门控 PASS，app 1.22MB
 - 验证证据：hub 日志 `设备已连接 → 决定 → allow (device)`；send 返回 `结果: allow`
 
@@ -212,7 +212,7 @@ Claude Code (--permission-prompt-tool) → MCP stdio → 桥(approval-bridge/bri
 - **宿主 Bun 的 fetch 受 magpie 代理 env 影响不转发 127.0.0.1** → 用 `node:http` 直连解决
 - 插件按路径安装：`magpie plugin add <path>/notify.hooks.ts`；卸载 rm
 - 节流 10s/同 (agent,model)；设备通知 TTL 5s
-- 已知展示瑕疵（前端阶段修）：待机屏状态行残留启动文本；ZCode 会话流量被 ctx.agent 识别为 clientInfo 名（"approval-bridge"）而非 "zcode"
+- 已知展示瑕疵（前端阶段修）：待机屏状态行残留启动文本；ZCode 会话流量被 ctx.agent 识别为 clientInfo 名（"passport-gateway"，2026-11-12 统一改名）而非 "zcode"
 - 附带确认：用户生态 = ZCode + Codex + WorkBuddy（腾讯，Magpie 社区供应商插件）全在 Magpie 路由下——一个插件覆盖全部三个 Agent 的活动
 
 端到端证据：真实 codex 任务流量 → 插件 onRequest（诊断文件逐条）→ POST 204 → hub 广播 → 设备通知屏显示（canvas 采样 lit=2000）→ TTL 过期自动回待机。
@@ -271,7 +271,7 @@ WorkBuddy（腾讯 CodeBuddy 系，Electron）桌面进程监听 4 个本机端�
 - 其他 control_request（elicitation 等）回 allowed:false 即安全降级
 - hy4-preview 模型实测：allowed:true → touch 真实执行；deny:timeout → allowed:false → CLI 正常收尾
 
-**桥**：`bridge.py workbuddy --task "..." --cwd <dir>`（hub/mcp/send/codex/zcode/workbuddy 六模式齐）。approval-bridge 已独立 git init（本地仓库 37ea5ed，非上游）。
+**桥**：`bridge.py workbuddy --task "..." --cwd <dir>`（hub/mcp/send/codex/zcode/workbuddy 六模式齐）。passport-gateway 已建私有仓库 Echo-Smith/passport-gateway（2026-11-12 推齐，目录同名）。
 
 **统一网关终态**：手动 send / Codex / ZCode / WorkBuddy / Magpie 活动+用量 —— **用户全部三 Agent 的审批均可走设备**。
 

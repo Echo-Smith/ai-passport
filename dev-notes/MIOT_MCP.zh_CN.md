@@ -37,7 +37,7 @@
 
 ## 一期已落地：审批代理（approval-miot-mcp，2026-10-28 端到端走通）
 
-`approval-bridge/miot-gateway/approval_miot_mcp.py`——米家控制审批代理 MCP：
+`passport-gateway/miot-gateway/approval_miot_mcp.py`——米家控制审批代理 MCP：
 
 - **架构**：agent 客户端 → 本代理（FastMCP 子类覆写 list_tools/call_tool）→ miot-mcp 子进程（ClientSession 长连）→ 米家云；控制类调用先经 hub UDS（`hub.sock`，`{"type":"request",...}` 阻塞等 result）
 - **策略**：默认拒绝制——12 个查询工具直读，其余（控制/场景/账号操作）一律设备弹窗；`agent=mihome`，title 带中文设备名（设备字库已扩 30 字），超时 60s fail-safe=deny
@@ -46,7 +46,7 @@
 - **客户端接入**：把 mcpServers 配置的 args 换成本代理即可（工具语义与 miot-mcp 完全一致，26 个）：
   ```json
   {"mcpServers":{"mijia":{"command":"/Users/marshecho/Codex/AI-Passport/miot-mcp/.venv/bin/python",
-    "args":["/Users/marshecho/Codex/AI-Passport/approval-bridge/miot-gateway/approval_miot_mcp.py"]}}}
+    "args":["/Users/marshecho/Codex/AI-Passport/passport-gateway/miot-gateway/approval_miot_mcp.py"]}}}
   ```
 
 ## 二期（已拍板）：底座迁移 miloco-miot

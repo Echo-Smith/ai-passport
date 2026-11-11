@@ -785,7 +785,7 @@ static void show_about_page(void) {
     open_page_container();
     const char *rows[] = {
         "Approval Remote v0.5",
-        "桥: Mac approval-bridge",
+        "桥: Mac passport-gateway",
         "电源键=硬件开关",
         NULL,
     };

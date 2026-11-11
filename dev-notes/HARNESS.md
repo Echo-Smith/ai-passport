@@ -164,13 +164,13 @@ Permanently unusable from firmware (no wiring + the chip has no host interface +
 
 **Verified chain (simulator end-to-end ✓)**:
 ```
-Claude Code (--permission-prompt-tool) → MCP stdio → bridge (approval-bridge/bridge.py)
+Claude Code (--permission-prompt-tool) → MCP stdio → bridge (passport-gateway/bridge.py)
   → LAN TCP (JSON lines, token auth, timeout fail-safe = deny)
   → firmware feature/approval-remote (approval_main.c)
   → pending screen: OK=allow / DOWN=deny → decision travels back
 ```
 
-- Bridge: `~/Codex/AI-Passport/approval-bridge/bridge.py` (hub/mcp/send modes; self-test plus device integration verified)
+- Bridge: `~/Codex/AI-Passport/passport-gateway/bridge.py` (hub/mcp/send modes; self-test plus device integration verified)
 - Firmware: `feature/approval-remote` branch, gate PASS, app 1.22 MB
 - Evidence: hub log `device connected → decision → allow (device)`; `send` prints `result: allow`
 
@@ -202,7 +202,7 @@ The user chose the plugin route over polling (the bridge makes no outbound reque
 - **the host Bun fetch honors magpie's proxy env and will not reach 127.0.0.1** — fixed by using `node:http` directly
 - install by path with `magpie plugin add <path>/notify.hooks.ts`; remove with rm
 - throttled to one push per (agent, model) per 10 s; device TTL 5 s
-- known display nits (for the front-end pass): the idle status line keeps boot-time text; ZCode-session traffic shows up under the clientInfo name ("approval-bridge") rather than "zcode"
+- known display nits (for the front-end pass): the idle status line keeps boot-time text; ZCode-session traffic shows up under the clientInfo name ("passport-gateway", renamed 2026-11-12) rather than "zcode"
 - confirmed in passing: the user's fleet — ZCode + Codex + WorkBuddy (Tencent, via the community provider plugin) — all route through Magpie, so one hook covers all three agents
 
 End-to-end evidence: real codex traffic → plugin onRequest (diag log per hit) → POST 204 → hub broadcast → device notification screen (canvas sampling lit=2000) → auto-return after TTL.
@@ -261,7 +261,7 @@ Status bar on one row: 14 px time (left) | battery outline 36×18 with the green
 - other control_requests (elicitation etc.) degrade safely with allowed:false
 - measured on hy4-preview: allowed:true really executed touch; deny:timeout returned allowed:false and the CLI finished normally
 
-**Bridge**: `bridge.py workbuddy --task "..." --cwd <dir>` (six modes: hub/mcp/send/codex/zcode/workbuddy). approval-bridge now has its own local git history (37ea5ed; not upstream).
+**Bridge**: `bridge.py workbuddy --task "..." --cwd <dir>` (six modes: hub/mcp/send/codex/zcode/workbuddy). passport-gateway now lives in its own private repo Echo-Smith/passport-gateway (pushed 2026-11-12; local dir renamed to match).
 
 **Unified gateway end state**: manual send / Codex / ZCode / WorkBuddy / Magpie activity+usage — **approvals for all three of the user's agents can travel through the device**.
 
