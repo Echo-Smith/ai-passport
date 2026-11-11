@@ -56,7 +56,8 @@ static char s_quiet_start[6] = "23:00";          // 免打扰开始
 static char s_quiet_end[6] = "07:00";            // 免打扰结束
 
 // ---- 状态 ----
-typedef enum { PG_HOME, PG_MENU, PG_ACTIVITY, PG_USAGE, PG_PUSH, PG_PROV, PG_SETTINGS, PG_ABOUT } page_t;
+typedef enum { PG_HOME, PG_MENU, PG_ACTIVITY, PG_USAGE, PG_DEVICES, PG_PUSH,
+               PG_PROV, PG_SETTINGS, PG_ABOUT } page_t;
 typedef enum { OV_NONE, OV_REQ_P1, OV_REQ_P2, OV_NOTIFY, OV_FLASH } overlay_t;
 
 static QueueHandle_t s_decision_q;
@@ -69,6 +70,12 @@ static char s_usage_tokens[24];
 static struct { char name[24]; char left[24]; } s_quotas[UI_QUOTA_MAX];
 static int s_quota_n;
 static bool s_usage_valid;
+
+// 米家设备页（选定设备 + 开关状态；hub 为准，设备端不持久化）
+static struct { char id[24]; char name[24]; bool on; int8_t pending; }
+    s_devices[UI_DEV_MAX];   // pending: -1 无 / 0→关 1→开（toggle 进行中）
+static int s_device_n;
+static uint8_t s_dev_sel;
 
 // 时钟 / 信号
 static int s_hour = -1, s_min, s_wday, s_month, s_day;
@@ -132,6 +139,7 @@ static void (*s_prov_cb)(void);
 static void show_home(void);
 static void show_menu(void);
 static void show_push_page(void);
+static void show_devices_page(void);
 static void settings_adjust(void);
 static uint8_t s_set_sel;
 static const char *const kOffTxt[4] = { "关", "30s", "60s", "120s" };
@@ -400,14 +408,14 @@ static void show_home(void) {
 // 菜单（灰底 + 白卡片）
 // ======================================================================
 static const char *const MENU_ITEMS[] =
-    { "推送", "用量与额度", "设置", "关于" };
-#define MENU_COUNT 4
+    { "推送", "用量与额度", "设备", "设置", "关于" };
+#define MENU_COUNT 5
 static lv_obj_t *menu_list;
 
 static void menu_refresh(void) {
     lv_obj_clean(menu_list);
     for (int i = 0; i < MENU_COUNT; i++) {
-        lv_obj_t *row = make_card(menu_list, 208, 52);
+        lv_obj_t *row = make_card(menu_list, 208, 44);
         lv_obj_set_style_pad_hor(row, 12, 0);
         if (i == s_menu_sel) {
             lv_obj_set_style_bg_color(row, lv_color_hex(P->sel_bg), 0);
@@ -420,9 +428,9 @@ static void menu_refresh(void) {
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(dot,
             lv_color_hex(i == s_menu_sel ? P->accent : P->hair), 0);
-        lv_obj_set_pos(dot, 2, 23);
+        lv_obj_set_pos(dot, 2, 19);
         lv_obj_t *t = make_label(row, &app_font_16,
-                                 i == s_menu_sel ? P->ink : P->body, 16, 16, 160);
+                                 i == s_menu_sel ? P->ink : P->body, 16, 14, 160);
         lv_label_set_text(t, MENU_ITEMS[i]);
     }
 }
@@ -436,11 +444,10 @@ static void show_menu(void) {
     lv_obj_set_pos(menu_list, 0, 0);
     lv_obj_clear_flag(menu_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(menu_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(menu_list, 8, 0);
+    lv_obj_set_style_pad_row(menu_list, 6, 0);
     menu_refresh();
     ui_footer("OK 返回 · 长按OK 打开");
 }
-
 // ======================================================================
 // 推送页（健康状态：桥/设备/待决请求）
 // ======================================================================
@@ -588,6 +595,85 @@ static void show_usage_page(void) {
     }
     ui_footer("OK 返回 · 上下 查看");
 }
+
+// ======================================================================
+// 米家设备页（网页勾选的开关设备；长按 OK 切换，OK 单击返回）
+// ======================================================================
+static QueueHandle_t s_cmd_q;
+static uint32_t s_cmd_seq;
+
+void approval_ui_set_cmd_queue(QueueHandle_t cmd_out) { s_cmd_q = cmd_out; }
+
+static void ui_send_cmd(ui_cmd_kind_t kind, const char *did, bool value) {
+    if (!s_cmd_q) return;
+    ui_cmd_t c = { 0 };
+    c.kind = kind;
+    if (did) strlcpy(c.device_id, did, sizeof(c.device_id));
+    c.value = value;
+    snprintf(c.req_id, sizeof(c.req_id), "dev-%lu",
+             (unsigned long)++s_cmd_seq);
+    (void)xQueueSend(s_cmd_q, &c, 0);
+}
+
+static lv_obj_t *s_dev_list;
+static bool s_dev_loading;
+
+static void devices_refresh(void) {
+    lv_obj_clean(s_dev_list);
+    if (s_device_n == 0) {
+        lv_obj_t *e = make_label(s_dev_list, &app_font_16, P->sub, 4, 8, 196);
+        // 首次进入列表未到达前显示加载中，避免误导为"未选择"
+        lv_label_set_text(e, s_dev_loading ? "加载中…" : "未选择设备\n（网页设置页勾选）");
+        return;
+    }
+    for (int i = 0; i < s_device_n; i++) {
+        lv_obj_t *row = make_card(s_dev_list, 208, 44);
+        lv_obj_set_style_pad_hor(row, 12, 0);
+        if (i == s_dev_sel) {
+            lv_obj_set_style_bg_color(row, lv_color_hex(P->sel_bg), 0);
+            lv_obj_set_style_border_color(row, lv_color_hex(P->accent), 0);
+        }
+        lv_obj_t *dot = lv_obj_create(row);
+        style_reset(dot);
+        lv_obj_set_size(dot, 6, 6);
+        lv_obj_set_style_radius(dot, 3, 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(dot,
+            lv_color_hex(i == s_dev_sel ? P->accent : P->hair), 0);
+        lv_obj_set_pos(dot, 2, 19);
+        lv_obj_t *nm = make_label(row, &app_font_16,
+                                  i == s_dev_sel ? P->ink : P->body,
+                                  16, 12, 130);
+        lv_label_set_text(nm, s_devices[i].name);
+        lv_obj_t *st;
+        if (s_devices[i].pending >= 0) {
+            st = make_label(row, &app_font_16, P->sub, 130, 12, 66);
+            lv_label_set_text(st, "切换中");
+        } else {
+            bool on = s_devices[i].on;
+            st = make_label(row, &app_font_16,
+                            on ? P->allow : P->sub, 130, 12, 66);
+            lv_obj_set_style_text_align(st, LV_TEXT_ALIGN_RIGHT, 0);
+            lv_label_set_text(st, on ? "开" : "关");
+        }
+    }
+}
+
+static void show_devices_page(void) {
+    s_page = PG_DEVICES;
+    open_page_container();
+    lv_obj_t *list = lv_obj_create(page_cont);
+    style_reset(list);
+    lv_obj_set_size(list, 208, 244);
+    lv_obj_set_pos(list, 0, 0);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, 8, 0);
+    s_dev_list = list;
+    s_dev_loading = true;
+    devices_refresh();
+    ui_send_cmd(UI_CMD_MIHOME_LIST, NULL, false);
+    ui_footer("长按OK 开关 · OK 返回");}
 
 // ======================================================================
 // 设置页（外观 + 屏幕调光，NVS 持久化，双行选择）
@@ -916,8 +1002,9 @@ static void menu_open_selected(void) {
     switch (s_menu_sel) {
         case 0: show_push_page(); break;
         case 1: show_usage_page(); break;
-        case 2: show_settings_page(); break;
-        case 3: show_about_page(); break;
+        case 2: show_devices_page(); break;
+        case 3: show_settings_page(); break;
+        case 4: show_about_page(); break;
     }
 }
 
@@ -1000,6 +1087,26 @@ static void handle_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
         return;
     }
 
+    // 设备页：上/下选择行；长按 OK 切换选中设备的开关；OK 单击返回
+    if (s_page == PG_DEVICES && s_device_n > 0) {
+        if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) &&
+            ev == BSP_BTN_PRESS) {
+            s_dev_sel = (uint8_t)((s_dev_sel +
+                (btn == BSP_BTN_DOWN ? 1 : s_device_n - 1)) % s_device_n);
+            devices_refresh();
+            ui_footer("长按OK 开关 · OK 返回");
+            return;
+        }
+        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG &&
+            s_devices[s_dev_sel].pending < 0) {
+            int8_t target = s_devices[s_dev_sel].on ? 0 : 1;
+            s_devices[s_dev_sel].pending = target;
+            devices_refresh();
+            ui_send_cmd(UI_CMD_MIHOME_TOGGLE,
+                        s_devices[s_dev_sel].id, target == 1);
+        }
+    }
+
     // OK 单击：返回（配网页重启回正常连接）
     if (ev == BSP_BTN_CLICK && btn == BSP_BTN_OK) {
         if (s_page == PG_PROV) esp_restart();
@@ -1029,6 +1136,34 @@ static void handle_msg(const ui_msg_t *m) {
         case UI_MSG_USAGE:
             usage_apply(m);
             break;
+        case UI_MSG_DEVICES:
+            s_device_n = m->device_n;
+            s_dev_sel = 0;
+            s_dev_loading = false;
+            for (int i = 0; i < m->device_n && i < UI_DEV_MAX; i++) {
+                strlcpy(s_devices[i].id, m->devices[i].id,
+                        sizeof(s_devices[i].id));
+                strlcpy(s_devices[i].name, m->devices[i].name,
+                        sizeof(s_devices[i].name));
+                s_devices[i].on = m->devices[i].on;
+                s_devices[i].pending = -1;
+            }
+            if (s_page == PG_DEVICES) devices_refresh();
+            break;
+        case UI_MSG_DEVICES_RESULT: {
+            for (int i = 0; i < s_device_n; i++) {
+                if (strcmp(s_devices[i].id, m->id) == 0) {
+                    s_devices[i].pending = -1;
+                    if (m->dev_ok) s_devices[i].on = m->dev_on;
+                    break;
+                }
+            }
+            if (s_page == PG_DEVICES) {
+                devices_refresh();
+                ui_footer(m->dev_ok ? "长按OK 开关 · OK 返回" : "切换失败，请重试");
+            }
+            break;
+        }
         case UI_MSG_SETTINGS: {
             // quota_n=dim, timeout_s=off, id[0]=dark, agent[0]=ttl,
             // title=quiet_start, detail=quiet_end

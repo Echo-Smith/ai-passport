@@ -40,6 +40,7 @@ static void start_wifi_prov(void) {
 }
 static bool wifi_connect_best(void);
 static QueueHandle_t s_decision_q;   // ui → net：审批决定
+static QueueHandle_t s_cmd_q;        // ui → net：米家设备页命令
 
 // ==========================================================================
 // Wi-Fi STA
@@ -247,6 +248,31 @@ static void post_msg(cJSON *root, const char *type) {
         if (ttl) m.agent[0] = (char)ttl->valueint;
         if (qs && cJSON_IsString(qs)) strlcpy(m.title, qs->valuestring, sizeof(m.title));
         if (qe && cJSON_IsString(qe)) strlcpy(m.detail, qe->valuestring, sizeof(m.detail));
+    } else if (strcmp(type, "devices") == 0) {
+        m.kind = UI_MSG_DEVICES;
+        cJSON *devs = cJSON_GetObjectItem(root, "devices");
+        m.device_n = 0;
+        cJSON *dv;
+        cJSON_ArrayForEach(dv, devs) {
+            if (m.device_n >= UI_DEV_MAX) break;
+            const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(dv, "id"));
+            const char *nm = cJSON_GetStringValue(cJSON_GetObjectItem(dv, "name"));
+            cJSON *on = cJSON_GetObjectItem(dv, "on");
+            strlcpy(m.devices[m.device_n].id, id ? id : "",
+                    sizeof(m.devices[0].id));
+            strlcpy(m.devices[m.device_n].name, nm ? nm : "?",
+                    sizeof(m.devices[0].name));
+            m.devices[m.device_n].on = cJSON_IsTrue(on);
+            m.device_n++;
+        }
+    } else if (strcmp(type, "devices_result") == 0) {
+        m.kind = UI_MSG_DEVICES_RESULT;
+        const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(root, "device_id"));
+        cJSON *ok = cJSON_GetObjectItem(root, "ok");
+        cJSON *on = cJSON_GetObjectItem(root, "on");
+        strlcpy(m.id, id ? id : "", sizeof(m.id));
+        m.dev_ok = cJSON_IsTrue(ok);
+        m.dev_on = cJSON_IsTrue(on);
     } else if (strcmp(type, "usage") == 0) {
         m.kind = UI_MSG_USAGE;
         const char *tokens = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tokens"));
@@ -312,6 +338,8 @@ static void net_task(void *arg) {
                                      || strcmp(type, "notify") == 0
                                      || strcmp(type, "usage") == 0
                                      || strcmp(type, "settings") == 0
+                                     || strcmp(type, "devices") == 0
+                                     || strcmp(type, "devices_result") == 0
                                      || strcmp(type, "cancel") == 0)) {
                             post_msg(root, type);
                         } else if (type && strcmp(type, "time") == 0) {
@@ -390,10 +418,23 @@ static void net_task(void *arg) {
                 } else if (errno != EWOULDBLOCK && errno != EAGAIN) {
                     break;
                 }
-                // UI 决定出队即发
+                // UI 决定出站即发；米家命令（设备页 list/toggle）同路
                 ui_decision_t d;
                 while (xQueueReceive(s_decision_q, &d, 0) == pdTRUE) {
                     send_decision(sock, d.id, d.allow);
+                }
+                ui_cmd_t c;
+                while (s_cmd_q && xQueueReceive(s_cmd_q, &c, 0) == pdTRUE) {
+                    if (c.kind == UI_CMD_MIHOME_LIST) {
+                        send_line(sock, "{\"type\":\"mihome_list\"}");
+                    } else {
+                        cJSON *obj = cJSON_CreateObject();
+                        cJSON_AddStringToObject(obj, "type", "mihome_toggle");
+                        cJSON_AddStringToObject(obj, "id", c.req_id);
+                        cJSON_AddStringToObject(obj, "device_id", c.device_id);
+                        cJSON_AddBoolToObject(obj, "value", c.value);
+                        send_json(sock, obj);
+                    }
                 }
             }
         } else {
@@ -441,7 +482,9 @@ void app_main(void) {
     bsp_display_backlight(70);
 
     s_decision_q = xQueueCreate(8, sizeof(ui_decision_t));
+    s_cmd_q = xQueueCreate(4, sizeof(ui_cmd_t));
     approval_ui_init(s_decision_q);
+    approval_ui_set_cmd_queue(s_cmd_q);
     lv_timer_create(ui_pump_timer, 30, NULL);
 
     approval_ui_set_provision_cb(start_wifi_prov);

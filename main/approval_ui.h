@@ -17,9 +17,12 @@ typedef enum {
     UI_MSG_SETTINGS,   // 网页下发的详细设置
     UI_MSG_PROVISION,  // 配网模式（title=AP名 detail=配网码）
     UI_MSG_CANCEL,     // 清除覆盖层（桥取消/断线）
+    UI_MSG_DEVICES,    // 米家设备页（选定设备+开关状态全量）
+    UI_MSG_DEVICES_RESULT,  // 单设备 toggle 结果（id/ok/on）
 } ui_msg_kind_t;
 
 #define UI_QUOTA_MAX 4   // Total + 3 家明细
+#define UI_DEV_MAX 8     // 设备页最多显示的选定设备数
 
 typedef struct {
     ui_msg_kind_t kind;
@@ -35,6 +38,15 @@ typedef struct {
         char left[24];
     } quotas[UI_QUOTA_MAX];
     int quota_n;
+    // devices 专用：kind=UI_MSG_DEVICES 时全量列表；RESULT 时仅 id/on/ok
+    struct {
+        char id[24];
+        char name[24];
+        bool on;
+    } devices[UI_DEV_MAX];
+    int device_n;
+    bool dev_ok;            // devices_result: toggle 是否成功
+    bool dev_on;            // devices_result: 新状态
 } ui_msg_t;
 
 // ui → net 的决定（队列元素）
@@ -42,6 +54,15 @@ typedef struct {
     bool allow;
     char id[24];
 } ui_decision_t;
+
+// ui → net 的米家命令（设备页发出）
+typedef enum { UI_CMD_MIHOME_LIST, UI_CMD_MIHOME_TOGGLE } ui_cmd_kind_t;
+typedef struct {
+    ui_cmd_kind_t kind;
+    char device_id[24];
+    char req_id[24];
+    bool value;
+} ui_cmd_t;
 
 // 初始化（在 LVGL 就绪后调用，内部建屏与定时器）。提供决定出口队列。
 void approval_ui_init(QueueHandle_t decision_out);
@@ -64,3 +85,6 @@ void approval_ui_set_rssi(int rssi_dbm);
 
 // 注册「重新配网」回调（设置页触发；main 侧起配网任务）
 void approval_ui_set_provision_cb(void (*fn)(void));
+
+// 注册米家命令出口队列（net 任务创建；设备页 toggle/list 经此发出）
+void approval_ui_set_cmd_queue(QueueHandle_t cmd_out);
